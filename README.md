@@ -8,6 +8,12 @@ This is an independent open-source project and is not affiliated with xAI.
 
 > **Status:** Prototype / active development. The project is designed for local experimentation and is not yet a production, multi-user agent platform.
 
+## Related Projects
+
+- [MuAPI](https://muapi.ai) — Unified API used by this workspace for model responses and image uploads.
+- [MuAPI API reference](https://muapi.ai/docs/api-reference) — Endpoint and prediction lifecycle documentation for the provider service.
+- [MuAPI access keys](https://muapi.ai/access-keys) — Create the API key used by the live-model configuration.
+
 ## What it does
 
 - **Bot personas:** Create, edit, and switch between bots with their own role, system prompt, model, and visual identity.

@@ -13,7 +13,7 @@ This is an independent open-source project and is not affiliated with xAI.
 - [MuAPI](https://muapi.ai) — Unified API used by this workspace for model responses and image uploads.
 - [MuAPI API reference](https://muapi.ai/docs/api-reference) — Endpoint and prediction lifecycle documentation for the provider service.
 - [MuAPI access keys](https://muapi.ai/access-keys) — Create the API key used by the live-model configuration.
-- [awesome-muse-bot](https://github.com/Anil-matcha/awesome-muse-bot) — copy-paste Muse agent briefs for practical workflows, connectors, and approval boundaries.
+- [awesome-meta-muse-agent](https://github.com/Anil-matcha/awesome-meta-muse-agent) — copy-paste Muse agent briefs for practical workflows, connectors, and approval boundaries.
 - [awesome-grok-bot](https://github.com/Anil-matcha/awesome-grok-bot) — curated bot templates for productivity, sales, marketing, operations, and personal workflows.
 - [awesome-gpt-6-astra](https://github.com/Anil-matcha/awesome-gpt-6-astra) — evidence-backed model workflows, prompts, evaluations, and safety notes.
 

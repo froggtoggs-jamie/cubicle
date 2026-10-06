@@ -57,7 +57,7 @@ WORKSPACE_TOOLS: List[ToolSpec] = [
     ),
     ToolSpec(
         name="workspace_write",
-        description="Create or overwrite a UTF-8 text file in the shared workspace. The destination directory must already exist.",
+        description="Create or overwrite a UTF-8 text file in the shared workspace. Missing parent folders are created automatically.",
         parameters=_obj(
             {
                 "path": {"type": "string", "description": "Relative file path"},

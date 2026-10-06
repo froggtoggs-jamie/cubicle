@@ -39,6 +39,19 @@ class WorkspaceServiceTests(unittest.TestCase):
         names = {entry["name"] for entry in self.service.execute(list_call)["entries"]}
         self.assertEqual(names, {"readme.txt", "new.txt"})
 
+    def test_write_creates_missing_folders_inside_the_workspace(self):
+        call = parse_workspace_command("/workspace write notes/2026/todo.txt\nremember")
+        result = self.service.execute(call)
+        self.assertTrue(result["written"])
+        self.assertTrue(result["created_directories"])
+        self.assertEqual((self.root / "notes" / "2026" / "todo.txt").read_text(encoding="utf-8"), "remember")
+
+        # But never outside the root, even through a new folder name.
+        escape = parse_workspace_command("/workspace write ../escaped/x.txt\nno")
+        with self.assertRaises(WorkspaceToolError):
+            self.service.execute(escape)
+        self.assertFalse((self.root.parent / "escaped").exists())
+
     def test_paths_cannot_escape_workspace(self):
         call = parse_workspace_command("/workspace read ../outside")
         with self.assertRaises(WorkspaceToolError):

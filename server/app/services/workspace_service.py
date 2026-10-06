@@ -136,11 +136,15 @@ class WorkspaceService:
             raise WorkspaceToolError(
                 f"Content is larger than the {settings.WORKSPACE_MAX_FILE_BYTES}-byte limit."
             )
-        if not path.parent.exists() or not path.parent.is_dir():
-            raise WorkspaceToolError("The destination directory must already exist.")
+        if path.parent.exists() and not path.parent.is_dir():
+            raise WorkspaceToolError(f"The destination's parent is a file, not a directory: {user_path}")
+        # _resolve already confined the path to the workspace root, and the
+        # user approved this exact path, so missing folders can be created.
+        created_dirs = not path.parent.exists()
+        path.parent.mkdir(parents=True, exist_ok=True)
 
         path.write_text(content, encoding="utf-8")
-        return {"path": user_path, "bytes": len(encoded), "written": True}
+        return {"path": user_path, "bytes": len(encoded), "written": True, "created_directories": created_dirs}
 
 
 workspace_service = WorkspaceService(settings.WORKSPACE_ROOT)

@@ -196,6 +196,45 @@ class ComposioServiceTests(unittest.TestCase):
         self.assertEqual(result["issues"][0]["number"], 7)
         self.assertNotIn("body", result["issues"][0])
 
+    def test_tool_catalog_requests_skip_deprecated_tools_and_honour_allow_lists(self):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(dict(request.url.params))
+            if request.url.path == "/api/v3/auth_configs":
+                return httpx.Response(200, json={"items": [
+                    {"status": "ENABLED", "tool_access_config": {"tools_available_for_execution": ["GMAIL_SEND_EMAIL", "GMAIL_LIST_THREADS"]}},
+                    {"status": "DISABLED", "tool_access_config": {"tools_available_for_execution": []}},
+                ]})
+            slugs = request.url.params.get("tool_slugs")
+            items = [{"slug": s} for s in slugs.split(",")] if slugs else [{"slug": "GMAIL_FETCH_EMAILS"}]
+            return httpx.Response(200, json={"items": items})
+
+        def factory(timeout):
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
+
+        service = ComposioService(KeyedStorage(), client_factory=factory, user_id="test-user")
+
+        tools = asyncio.run(service.list_tools("gmail", important_only=True, limit=40))
+        self.assertEqual([t["slug"] for t in tools], ["GMAIL_FETCH_EMAILS"])
+        self.assertEqual(seen[-1], {"toolkit_slug": "gmail", "limit": "40", "include_deprecated": "false", "important": "true"})
+
+        allowed = asyncio.run(service.allowed_tools("gmail"))
+        self.assertEqual(allowed, ["GMAIL_SEND_EMAIL", "GMAIL_LIST_THREADS"])
+        tools = asyncio.run(service.list_tools("gmail", important_only=False, tool_slugs=allowed))
+        self.assertEqual(sorted(t["slug"] for t in tools), ["GMAIL_LIST_THREADS", "GMAIL_SEND_EMAIL"])
+        self.assertEqual(seen[-1]["tool_slugs"], "GMAIL_LIST_THREADS,GMAIL_SEND_EMAIL")
+        self.assertEqual(seen[-1]["include_deprecated"], "false")
+
+        # Both lists are cached; a second call makes no request.
+        before = len(seen)
+        asyncio.run(service.allowed_tools("gmail"))
+        asyncio.run(service.list_tools("gmail", important_only=True, limit=40))
+        self.assertEqual(len(seen), before)
+        service.forget_connections()
+        asyncio.run(service.allowed_tools("gmail"))
+        self.assertEqual(len(seen), before + 1)
+
     def test_unsuccessful_execution_surfaces_the_error(self):
         fake = FakeComposio(execute={"successful": False, "error": "No active connection for github", "data": {}})
         with self.assertRaisesRegex(ConnectorServiceError, "No active connection"):

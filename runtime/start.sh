@@ -16,8 +16,16 @@ mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME" "$HOME/.config"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 # The home directory is an empty tmpfs on every start; seed the desktop
-# configuration (dock items, GTK theme) from the image.
+# configuration (dock items, GTK theme, window manager) from the image.
 cp -R /opt/open-grok-computer/skel/. "$HOME/"
+
+# Chromium profile (also on tmpfs). Use the window manager's title bar rather
+# than Chrome's own, so the "no minimize button" rule applies to the browser
+# too; there is no task list to restore a minimized window from.
+if [ ! -f /tmp/profile/Default/Preferences ]; then
+    mkdir -p /tmp/profile/Default
+    printf '{"browser":{"custom_chrome_frame":false,"check_default_browser":false}}' > /tmp/profile/Default/Preferences
+fi
 
 # X server with VNC built in. Loopback only; the driver bridges it over the
 # token-protected port, so nothing unauthenticated reaches the network.

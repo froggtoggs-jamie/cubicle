@@ -25,7 +25,7 @@ COPY applications ./applications
 # wrapper and the launcher icon need the exact build Playwright resolved.
 RUN CHROME="$(node -e "console.log(require('playwright').chromium.executablePath())")" \
     && sed -i "s#__CHROME__#${CHROME}#" chromium-browser \
-    && sed -i "s#__CHROME_ICON__#$(dirname "${CHROME}")/product_logo_48.png#" applications/open-grok-chromium.desktop \
+    && sed -i "s#__CHROME__#${CHROME}#; s#__CHROME_ICON__#$(dirname "${CHROME}")/product_logo_48.png#" applications/open-grok-chromium.desktop \
     && install -m 0755 chromium-browser /usr/local/bin/chromium-browser \
     && install -m 0644 applications/*.desktop /usr/share/applications/ \
     && chmod 0755 start.sh \

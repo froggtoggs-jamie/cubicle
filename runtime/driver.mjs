@@ -1,13 +1,18 @@
 // Sandbox computer driver.
 //
 // Runs inside the runtime container on an Xvnc display (see start.sh). It
-// exposes a token-protected HTTP API for the host API: navigate the bot's
-// browser, capture the whole desktop, inject pointer/keyboard input into the
-// desktop, run shell commands, list files, and bridge the local VNC server
-// over a WebSocket so people can watch or take control of the same desktop.
+// exposes a token-protected HTTP API for the host API: navigate the browser,
+// capture the whole desktop, inject pointer/keyboard input into the desktop,
+// run shell commands, list files, and bridge the local VNC server over a
+// WebSocket so people can watch or take control of the same desktop.
+//
+// The browser is not started at boot. Chromium is launched on demand with
+// the exact command from the dock's launcher (so the dock recognises its
+// windows), and the driver attaches to it over the DevTools port. Whether
+// the bot or the person at the desk opened it, there is one browser.
 
 import net from 'node:net';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
@@ -23,13 +28,14 @@ const computerId = process.env.COMPUTER_ID || 'computer-runtime';
 const width = Number(process.env.VIEWPORT_WIDTH || 1280);
 const height = Number(process.env.VIEWPORT_HEIGHT || 720);
 const display = process.env.DISPLAY || ':1';
-const profileDir = '/tmp/profile';
 const vncPort = 5900;
-// The Plank dock auto-hides, so windows may use the full display.
-const PANEL_HEIGHT = 0;
+const CDP_PORT = Number(process.env.CHROME_CDP_PORT || 9222);
+const CHROME_DESKTOP_FILE = '/usr/share/applications/open-grok-chromium.desktop';
 
-let context;
-let page;
+let browser = null;
+let context = null;
+let page = null;
+let launching = null;
 let server;
 let queue = Promise.resolve();
 
@@ -40,6 +46,8 @@ const desktopEnv = {
   LANG: 'C.UTF-8',
   DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS || '',
   XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || '',
+  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || '',
+  GSETTINGS_BACKEND: process.env.GSETTINGS_BACKEND || '',
 };
 
 function json(response, statusCode, payload) {
@@ -225,40 +233,91 @@ async function sendInput(event) {
 
 // ---- browser ----------------------------------------------------------------
 
+// The launcher's Exec line is the single definition of how Chromium starts.
+async function chromeCommand() {
+  const text = await readFile(CHROME_DESKTOP_FILE, 'utf8');
+  const line = text.split('\n').find((entry) => entry.startsWith('Exec='));
+  if (!line) throw new Error('The Chromium launcher has no Exec line.');
+  const parts = line.slice('Exec='.length).trim().split(/\s+/).filter((part) => !part.startsWith('%'));
+  return { command: parts[0], args: parts.slice(1) };
+}
+
+async function cdpReady() {
+  try {
+    const response = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`, { signal: AbortSignal.timeout(1000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function launchChrome() {
+  const { command, args } = await chromeCommand();
+  const child = spawn(command, args, { detached: true, stdio: 'ignore', env: { ...process.env, ...desktopEnv } });
+  child.unref();
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    if (await cdpReady()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('Chromium did not start listening on its DevTools port.');
+}
+
+function resetBrowser() {
+  browser = null;
+  context = null;
+  page = null;
+}
+
 function trackPages() {
   const pages = context.pages();
-  page = pages[pages.length - 1];
+  page = pages[pages.length - 1] || null;
   context.on('page', (opened) => {
     page = opened;
     opened.on('close', () => {
-      const remaining = context.pages();
+      const remaining = context ? context.pages() : [];
       page = remaining[remaining.length - 1] || null;
     });
   });
 }
 
+async function ensureBrowser() {
+  if (browser && browser.isConnected()) return browser;
+  if (launching) return launching;
+  launching = (async () => {
+    resetBrowser();
+    if (!(await cdpReady())) await launchChrome();
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${CDP_PORT}`, { timeout: 15000 });
+    browser.on('disconnected', resetBrowser);
+    context = browser.contexts()[0] || (await browser.newContext());
+    trackPages();
+    return browser;
+  })();
+  try {
+    return await launching;
+  } finally {
+    launching = null;
+  }
+}
+
 async function ensurePage() {
+  await ensureBrowser();
   if (!page || page.isClosed()) {
-    page = context.pages()[0] || (await context.newPage());
+    const pages = context.pages();
+    page = pages[pages.length - 1] || (await context.newPage());
   }
   return page;
 }
 
+function browserRunning() {
+  return Boolean(browser && browser.isConnected());
+}
+
+function currentPage() {
+  return browserRunning() && page && !page.isClosed() ? page : null;
+}
+
 // Chromium's toplevel window title ends with "Google Chrome for Testing".
 const CHROME_WINDOW = 'Google Chrome';
-
-async function minimizeBrowser() {
-  // Let the window map first, then minimize so the desktop and dock are what
-  // a freshly started computer shows. Best effort: a failure here is cosmetic.
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    try {
-      await xdotool(['search', '--name', CHROME_WINDOW, 'windowminimize', '%@']);
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-}
 
 async function raiseBrowser() {
   try {
@@ -279,10 +338,12 @@ async function handle(request, response) {
   try {
     const body = request.method === 'POST' ? await readBody(request) : {};
     if (request.method === 'GET' && request.url === '/health') {
+      const current = currentPage();
       json(response, 200, {
         status: 'healthy',
         computer_id: computerId,
-        url: page && !page.isClosed() ? page.url() : 'about:blank',
+        url: current ? current.url() : null,
+        browser_running: browserRunning(),
         width,
         height,
         desktop: true,
@@ -302,12 +363,13 @@ async function handle(request, response) {
       }
 
       if (request.method === 'POST' && request.url === '/screenshot') {
+        const current = currentPage();
         return {
           operation: 'screenshot',
           format: 'jpeg',
           width,
           height,
-          url: page && !page.isClosed() ? page.url() : null,
+          url: current ? current.url() : null,
           frame_id: `frame-${Date.now()}`,
           data: await captureDesktop(),
         };
@@ -331,8 +393,13 @@ async function handle(request, response) {
       }
 
       if (request.method === 'GET' && request.url === '/state') {
-        const current = page && !page.isClosed() ? page : null;
-        return { operation: 'state', url: current ? current.url() : null, title: current ? await current.title() : null };
+        const current = currentPage();
+        return {
+          operation: 'state',
+          browser_running: browserRunning(),
+          url: current ? current.url() : null,
+          title: current ? await current.title() : null,
+        };
       }
 
       throw new Error('Runtime route not found.');
@@ -381,24 +448,6 @@ async function main() {
   await mkdir(workspace, { recursive: true });
   await stat(workspace);
 
-  context = await chromium.launchPersistentContext(profileDir, {
-    headless: false,
-    viewport: null,
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: [
-      `--window-size=${width},${height - PANEL_HEIGHT}`,
-      '--window-position=0,0',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-infobars',
-      '--disable-session-crashed-bubble',
-    ],
-    env: { ...process.env, DISPLAY: display },
-  });
-  trackPages();
-  await (await ensurePage()).goto('about:blank');
-  await minimizeBrowser();
-
   server = createServer((request, response) => handle(request, response));
   server.on('upgrade', handleUpgrade);
   server.listen(port, '0.0.0.0', () => {
@@ -408,7 +457,7 @@ async function main() {
 
 async function shutdown() {
   if (server) await new Promise((resolve) => server.close(resolve));
-  if (context) await context.close().catch(() => {});
+  if (browser) await browser.close().catch(() => {});
   process.exit(0);
 }
 

@@ -361,6 +361,27 @@ export function resetComputer(botId) {
   return runComputerLifecycleAction(botId, 'reset');
 }
 
+// Hand the sandbox desktop to the user ("user") or back to the bot ("bot").
+export async function setComputerControl(botId, owner) {
+  const res = await apiFetch(`${API_BASE_URL}/computers/${encodeURIComponent(botId)}/control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ owner }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.detail || 'Could not change computer control');
+  return payload;
+}
+
+// WebSocket URL for the live desktop (noVNC). Same origin and cookie as the API.
+export function computerVncUrl(botId) {
+  if (typeof window === 'undefined') return '';
+  const base = API_BASE_URL.startsWith('http') ? new URL(API_BASE_URL) : new URL(API_BASE_URL, window.location.origin);
+  const protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+  const path = base.pathname.replace(/\/$/, '');
+  return `${protocol}//${base.host}${path}/computers/${encodeURIComponent(botId)}/vnc`;
+}
+
 export async function runComputerAction(botId, action, argumentsData = {}) {
   const res = await apiFetch(`${API_BASE_URL}/computers/${encodeURIComponent(botId)}/actions`, {
     method: 'POST',

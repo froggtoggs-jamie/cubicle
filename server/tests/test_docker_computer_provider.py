@@ -61,6 +61,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--security-opt", run_args)
         self.assertIn("no-new-privileges:true", run_args)
         self.assertIn("--pids-limit", run_args)
+        self.assertIn("/home/pwuser:rw,nosuid,size=1g,uid=1001,gid=1001", run_args)
         self.assertIn("--publish", run_args)
         self.assertIn("127.0.0.1::3000", run_args)
         self.assertNotIn("COMPUTER_TOKEN", started.to_dict())
@@ -224,6 +225,45 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("open-grok-bot", mount.replace("\\", "/"))
         self.assertNotIn(str(self.root), mount)
         self.assertTrue(mount.endswith(",dst=/workspace"))
+
+    async def test_user_control_blocks_bot_input_and_navigation_until_handed_back(self):
+        status = self.provider.get_or_create("bot-test")
+
+        async def ready(_record):
+            return {"status": "healthy"}
+
+        async def request(_record, method, route, payload=None):
+            return {"status": "healthy", "accepted": True, "url": "https://example.test", "title": "x"}
+
+        self.provider._wait_until_ready = ready
+        self.provider._request = request
+        await self.provider.start(status.computer_id)
+
+        self.assertEqual(self.provider.vnc_target(status.computer_id)["port"], 45678)
+        self.assertIn("vnc", status.capabilities)
+
+        takeover = await self.provider.request_takeover(status.computer_id, "Please log in to the site.")
+        self.assertTrue(takeover["requested"])
+        self.assertEqual(status.takeover_request["reason"], "Please log in to the site.")
+
+        await self.provider.set_control(status.computer_id, "user")
+        self.assertEqual(status.controlled_by, "user")
+        with self.assertRaisesRegex(ComputerProviderError, "user currently has control"):
+            await self.provider.send_input(status.computer_id, {"type": "click", "x": 1, "y": 1})
+        with self.assertRaisesRegex(ComputerProviderError, "user currently has control"):
+            await self.provider.browser_navigate(status.computer_id, "https://example.test")
+        # Looking is still allowed while the user drives.
+        self.assertTrue((await self.provider.screenshot(status.computer_id))["available"])
+
+        await self.provider.set_control(status.computer_id, "bot")
+        self.assertEqual(status.controlled_by, "bot")
+        self.assertIsNone(status.takeover_request)
+        self.assertTrue((await self.provider.send_input(status.computer_id, {"type": "click", "x": 1, "y": 1}))["accepted"])
+
+        with self.assertRaisesRegex(ComputerProviderError, "'bot' or 'user'"):
+            await self.provider.set_control(status.computer_id, "me")
+        await self.provider.stop(status.computer_id)
+        self.assertIsNone(self.provider.vnc_target(status.computer_id))
 
     def test_unknown_workspace_mode_is_rejected(self):
         with self.assertRaises(ValueError):

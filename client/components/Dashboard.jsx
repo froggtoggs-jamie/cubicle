@@ -28,6 +28,8 @@ export default function Dashboard() {
   const [activeBotId, setActiveBotId] = useState('');
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'computer' | 'marketplace' | 'audit'
   const [messages, setMessages] = useState([]);
+  // Text to drop into the chat input, e.g. after handing a computer back.
+  const [chatPrefill, setChatPrefill] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [defaultModel, setDefaultModel] = useState('');
   const [userName, setUserName] = useState(() => {
@@ -167,11 +169,22 @@ export default function Dashboard() {
             onUpdateBotModel={handleUpdateBotModel}
             onToggleComputer={() => setActiveTab('computer')}
             defaultModel={defaultModel}
+            prefill={chatPrefill}
           />
         )}
 
         {activeTab === 'computer' && (
-          <ComputerPanel bot={activeBot} onBackToChat={() => setActiveTab('chat')} />
+          <ComputerPanel
+            bot={activeBot}
+            onBackToChat={() => setActiveTab('chat')}
+            onHandBack={() => {
+              setChatPrefill({
+                text: "I'm done on the computer and have handed control back to you. Please continue.",
+                nonce: Date.now(),
+              });
+              setActiveTab('chat');
+            }}
+          />
         )}
 
         {activeTab === 'marketplace' && (

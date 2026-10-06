@@ -32,6 +32,9 @@ from app.services.computer_provider import (
     ComputerProviderError,
     ComputerStatus,
     computer_id_for_bot,
+    require_bot_control,
+    validate_control_owner,
+    validate_takeover_reason,
 )
 
 
@@ -112,7 +115,7 @@ class DockerComputerProvider:
             height=720,
             fps=10,
             generation=generation,
-            capabilities=COMPUTER_CAPABILITIES,
+            capabilities=COMPUTER_CAPABILITIES + ("vnc",),
             updated_at=_now(),
         )
 
@@ -251,8 +254,10 @@ class DockerComputerProvider:
             "--read-only",
             "--tmpfs",
             "/tmp:rw,nosuid,size=512m",
+            # uid/gid match the image's pwuser so the sandbox user can write to
+            # its own home directory (npm, pip, and desktop config need it).
             "--tmpfs",
-            "/home/pwuser:rw,nosuid,size=1g",
+            "/home/pwuser:rw,nosuid,size=1g,uid=1001,gid=1001",
             "--mount",
             self._workspace_mount(record),
             "--cpus",
@@ -447,6 +452,7 @@ class DockerComputerProvider:
 
     async def browser_navigate(self, computer_id: str, url: str) -> Dict[str, Any]:
         record = self._active_record(computer_id)
+        require_bot_control(record.status)
         if not isinstance(url, str) or len(url.strip()) > 2048:
             raise ComputerProviderError("A browser URL is required and must be at most 2048 characters.")
         parsed = urlparse(url.strip())
@@ -499,11 +505,41 @@ class DockerComputerProvider:
 
     async def send_input(self, computer_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         record = self._active_record(computer_id)
+        require_bot_control(record.status)
         if not isinstance(event, dict):
             raise ComputerProviderError("Computer input must be a JSON object.")
         result = await self._request(record, "POST", "/input", {"event": event})
         self._touch(record.status, "input")
         return {"computer_id": computer_id, "provider": self.provider_name, **result}
+
+    async def set_control(self, computer_id: str, owner: str) -> ComputerStatus:
+        record = self._record_for(computer_id)
+        record.status.controlled_by = validate_control_owner(owner)
+        if record.status.controlled_by == "bot":
+            record.status.takeover_request = None
+        return self._touch(record.status, "control")
+
+    async def request_takeover(self, computer_id: str, reason: str) -> Dict[str, Any]:
+        record = self._active_record(computer_id)
+        record.status.takeover_request = {"reason": validate_takeover_reason(reason), "requested_at": _now()}
+        self._touch(record.status, "takeover.request")
+        return {
+            "computer_id": computer_id,
+            "provider": self.provider_name,
+            "operation": "takeover.request",
+            "requested": True,
+            "reason": record.status.takeover_request["reason"],
+            "controlled_by": record.status.controlled_by,
+            "next": "Tell the user what to do and end your turn; they will message you when they hand control back.",
+        }
+
+    def vnc_target(self, computer_id: str) -> Optional[Dict[str, Any]]:
+        record = self._runtimes.get(computer_id)
+        if record is None or record.status.state not in {"running", "paused"}:
+            return None
+        if not record.host or not record.port or not record.container_id:
+            return None
+        return {"host": record.host, "port": record.port, "token": record.token}
 
     async def cleanup(self, computer_id: str) -> Dict[str, Any]:
         async with self._lock:

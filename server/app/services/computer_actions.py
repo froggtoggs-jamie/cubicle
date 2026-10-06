@@ -83,6 +83,15 @@ def register_computer_actions(
     async def cleanup(call: ActionInvocation) -> Dict[str, Any]:
         return await target_provider.cleanup(_status_for(call, target_provider).computer_id)
 
+    async def request_takeover(call: ActionInvocation) -> Dict[str, Any]:
+        status = _status_for(call, target_provider)
+        return await target_provider.request_takeover(status.computer_id, str(call.arguments.get("reason") or ""))
+
+    async def set_control(call: ActionInvocation) -> Dict[str, Any]:
+        status = _status_for(call, target_provider)
+        updated = await target_provider.set_control(status.computer_id, str(call.arguments.get("owner") or ""))
+        return {**updated.to_dict(), "operation": "control"}
+
     definitions: Dict[str, tuple[ActionDefinition, Callable[[ActionInvocation], Any]]] = {
         "computer.create": (
             ActionDefinition(
@@ -215,6 +224,28 @@ def register_computer_actions(
                 requires_approval=True,
             ),
             cleanup,
+        ),
+        "computer.request_takeover": (
+            ActionDefinition(
+                name="computer.request_takeover",
+                tool="computer",
+                action="request_takeover",
+                intent="Ask the user to take control of the bot computer.",
+                risk="read",
+                requires_approval=False,
+            ),
+            request_takeover,
+        ),
+        "computer.set_control": (
+            ActionDefinition(
+                name="computer.set_control",
+                tool="computer",
+                action="set_control",
+                intent="Hand control of the bot computer between the user and the bot.",
+                risk="write",
+                requires_approval=False,
+            ),
+            set_control,
         ),
     }
 

@@ -34,7 +34,7 @@ This is an independent open-source project and is not affiliated with xAI.
 - **Read-only GitHub action:** After connecting GitHub, run an explicit issue lookup from chat and pass its structured result through the action gateway.
 - **Approval-gated GitHub write:** Propose a GitHub issue from chat, inspect the repository/title/body-size preview, approve it, and receive a normalized issue result.
 - **Audit trail:** Review local approval, workspace-tool, and connector events from the sidebar.
-- **Computer provider surface:** Inspect a bot-scoped provider lifecycle, poll screen metadata, and run higher-risk provider actions through the same gateway used by tools.
+- **Sandbox desktop:** Each bot can have a sandboxed Ubuntu desktop (XFCE dock with Chromium, a file manager and a terminal) that the model drives through its tools. You watch it live in the Computer tab over VNC, can take control with your own mouse and keyboard, and hand it back. The bot can ask you to take over for logins, CAPTCHAs, or checks.
 
 ## Quick start
 
@@ -108,15 +108,19 @@ The local server creates a mode-0600 session token in `DATA_DIR` and the browser
 
 ### Optional Docker computer runtime
 
-The default provider is the deterministic local adapter. To enable real browser, terminal, file, input, and screenshot operations, build the pinned runtime image and opt in to the Docker provider:
+The default provider is the deterministic local adapter. To enable the real sandbox desktop (browser, terminal, file manager, input, screenshots, and live VNC), build the pinned runtime image and opt in to the Docker provider:
 
 ```bash
-docker build -t open-grok-bot-computer:1.62.1 ./runtime
+docker build -t open-grok-bot-computer:2.0.0 ./runtime
 export COMPUTER_PROVIDER=docker
-export COMPUTER_DOCKER_IMAGE=open-grok-bot-computer:1.62.1
+export COMPUTER_DOCKER_IMAGE=open-grok-bot-computer:2.0.0
 ```
 
-The Docker daemon must be running before starting the API. Each bot gets a separate container, a separate workspace under `DATA_DIR/computers`, an ephemeral loopback-only port, and an internal runtime token. The container root is read-only, capabilities are dropped, and CPU, memory, process, and shared-memory limits are applied. The current runtime provides browser screenshots and approved operations; human takeover and a desktop/VNC surface remain follow-up work.
+The Docker daemon must be running before starting the API. Each bot gets a separate container, a separate workspace under `DATA_DIR/computers`, an ephemeral loopback-only port, and an internal runtime token. The container root is read-only, capabilities are dropped, and CPU, memory, process, and shared-memory limits are applied.
+
+Inside the container an Xvnc display runs a minimal XFCE session: a bottom dock with Chromium, Thunar and xfce4-terminal, no application menu and no session controls. Chromium is launched headed by Playwright with a persistent profile, so the dock's Chromium button opens windows in the same instance the bot controls. Screenshots capture the whole desktop and input goes through xdotool, so the bot can use the terminal and file manager as well as the browser. Ubuntu 24.04 with Node, Python and pip, git, curl, jq and unzip is available; `/workspace` persists between starts and `/tmp` and the home directory are wiped.
+
+**Watching and taking control.** The Computer tab streams the desktop through noVNC. The WebSocket goes to the API, which checks your session and bridges to the sandbox driver using the per-computer token; the sandbox publishes no ports and its VNC server listens on loopback only. "Take control" lets your mouse and keyboard through; while you hold control the bot's click, type and navigate tools are refused (it can still take screenshots). "Hand back to bot" returns control. The bot has a `computer_request_takeover` tool: it posts a card in chat and the Computer tab with what it needs, and after you hand control back the chat input is pre-filled with a message telling it to continue.
 
 This is a local development runtime, not a hardened hostile-web sandbox. Follow the [official Playwright Docker guidance](https://playwright.dev/docs/docker) and do not send untrusted websites or credentials through it until network egress, image provenance, and stronger sandboxing are reviewed for your deployment.
 
@@ -192,7 +196,7 @@ The server reads these variables from the environment:
 | `AUTH_COOKIE_SECURE` | `0` | Set to `1` when serving over HTTPS |
 | `CORS_ORIGINS` | localhost and loopback client origins | Comma-separated browser origins allowed by the API |
 | `COMPUTER_PROVIDER` | `fake` | Computer adapter: `fake` or `docker` |
-| `COMPUTER_DOCKER_IMAGE` | `open-grok-bot-computer:1.62.1` | Pinned local runtime image |
+| `COMPUTER_DOCKER_IMAGE` | `open-grok-bot-computer:2.0.0` | Pinned local runtime image |
 | `COMPUTER_DOCKER_WORKSPACE_ROOT` | `DATA_DIR/computers` | Root for per-bot runtime workspaces |
 | `COMPUTER_DOCKER_CPU_LIMIT` | `2.0` | Docker CPU limit per computer |
 | `COMPUTER_DOCKER_MEMORY_LIMIT` | `2g` | Docker memory limit per computer |
@@ -291,7 +295,7 @@ With an OpenAI-compatible provider the model is offered these functions. The gat
 | Tool | Gateway action | Approval |
 | --- | --- | --- |
 | `workspace_list`, `workspace_read`, `workspace_write` | `workspace.*` | yes |
-| `computer_start`, `computer_screenshot`, `computer_files_list` | `computer.*` | no |
+| `computer_start`, `computer_screenshot`, `computer_files_list`, `computer_request_takeover` | `computer.*` | no |
 | `computer_browser_navigate`, `computer_terminal_execute`, `computer_send_input` | `computer.*` | yes |
 | `github_list_issues` | `connector.github_list_issues` | no |
 | `github_create_issue` | `connector.github_create_issue` | yes |
@@ -434,7 +438,7 @@ Confirm that the daemon is running, the runtime image was built, and the API use
 
 ```bash
 docker info
-docker image inspect open-grok-bot-computer:1.62.1
+docker image inspect open-grok-bot-computer:2.0.0
 echo "$COMPUTER_PROVIDER"
 ```
 

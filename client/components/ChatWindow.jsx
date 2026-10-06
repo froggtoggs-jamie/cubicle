@@ -35,7 +35,7 @@ function formatHeaderDate(msgs) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessages, onUpdateBotModel, onToggleComputer, defaultModel }) {
+export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessages, onUpdateBotModel, onToggleComputer, defaultModel, prefill }) {
   const [inputPrompt, setInputPrompt] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -43,6 +43,14 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
   const [selectedImage, setSelectedImage] = useState(null);
   const [pendingApprovals, setPendingApprovals] = useState([]);
   const [toolEvents, setToolEvents] = useState([]);
+  // Cards shown when the bot asks the user to take over its computer.
+  const [takeoverRequests, setTakeoverRequests] = useState([]);
+
+  // Text handed in from elsewhere (e.g. "I'm done on the computer" after a
+  // hand-back). An object with a nonce so the same text can be re-applied.
+  useEffect(() => {
+    if (prefill?.text) setInputPrompt(prefill.text);
+  }, [prefill]);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -168,6 +176,11 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
               setPendingApprovals((prev) => [
                 ...prev.filter((approval) => approval.requestId !== event.requestId),
                 event,
+              ]);
+            } else if (event.type === 'computer.takeover_requested') {
+              setTakeoverRequests((prev) => [
+                ...prev.slice(-2),
+                { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '' },
               ]);
             } else if (['tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'tool.expired'].includes(event.type)) {
               setToolEvents((prev) => [
@@ -309,6 +322,49 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
               approval={approval}
               onRespond={handleApprovalResponse}
             />
+          ))}
+
+          {takeoverRequests.map((request) => (
+            <div
+              key={request.id}
+              className="my-3 p-4 rounded-2xl border border-purple-500/30 bg-purple-500/10 shadow-xl max-w-xl"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center justify-center flex-shrink-0">
+                  <FiMonitor className="text-base" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-purple-200 uppercase tracking-wider">
+                    {botTitle} needs you on its computer
+                  </p>
+                  <p className="text-xs text-zinc-200 mt-1">{request.reason || 'The bot asked you to take over its computer.'}</p>
+                  <p className="text-[11px] text-zinc-400 mt-1">
+                    Open the computer, press Take control, do the step, then Hand back. The bot will continue when you tell it you are done.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-purple-500/20">
+                <button
+                  suppressHydrationWarning={true}
+                  type="button"
+                  onClick={() => setTakeoverRequests((prev) => prev.filter((item) => item.id !== request.id))}
+                  className="px-3 py-1.5 rounded-xl text-xs font-medium text-zinc-400 hover:text-white transition"
+                >
+                  Dismiss
+                </button>
+                <button
+                  suppressHydrationWarning={true}
+                  type="button"
+                  onClick={() => {
+                    setTakeoverRequests((prev) => prev.filter((item) => item.id !== request.id));
+                    if (onToggleComputer) onToggleComputer();
+                  }}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 transition"
+                >
+                  <FiMonitor className="text-sm" /> Open computer
+                </button>
+              </div>
+            </div>
           ))}
 
           {toolEvents.map((event) => (

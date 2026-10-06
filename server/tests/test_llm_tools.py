@@ -36,6 +36,7 @@ class ToolCatalogTests(unittest.TestCase):
     def test_description_explains_approvals_and_the_computer(self):
         text = describe_tools(available_tools(computer=True, github=False))
         self.assertIn("computer_start first", text)
+        self.assertIn("computer_request_takeover", text)
         self.assertIn("Tools that need approval:", text)
         self.assertIn("workspace_write", text)
         self.assertNotIn("github", text)
@@ -92,6 +93,12 @@ class BuildInvocationTests(unittest.TestCase):
         self.assertEqual(files.arguments["path"], "/workspace")
         self.assertEqual(build_invocation("computer_screenshot", {}, "bot-1").name, "computer.screenshot")
         self.assertEqual(build_invocation("computer_start", {}, "bot-1").name, "computer.start")
+
+        takeover = build_invocation("computer_request_takeover", {"reason": "Please solve the CAPTCHA."}, "bot-1")
+        self.assertEqual(takeover.name, "computer.request_takeover")
+        self.assertEqual(takeover.arguments["reason"], "Please solve the CAPTCHA.")
+        with self.assertRaisesRegex(ToolCallError, "'reason' is required"):
+            build_invocation("computer_request_takeover", {}, "bot-1")
 
     def test_github_calls_match_the_slash_command_shape(self):
         listing = build_invocation("github_list_issues", {"owner": "octo", "repo": "demo"}, "bot-1")

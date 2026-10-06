@@ -12,6 +12,12 @@ const nextConfig = {
   // Keep file tracing rooted here so a lockfile in a parent directory does not
   // change the standalone layout.
   outputFileTracingRoot: projectRoot,
+  webpack: (config) => {
+    // noVNC uses top-level await. Every browser this app targets supports
+    // async functions, so tell webpack rather than have it warn on each build.
+    config.output.environment = { ...(config.output.environment || {}), asyncFunction: true };
+    return config;
+  },
 };
 
 export default nextConfig;

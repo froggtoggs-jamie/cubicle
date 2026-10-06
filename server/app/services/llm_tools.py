@@ -107,6 +107,13 @@ COMPUTER_TOOLS: List[ToolSpec] = [
         needs_approval=False,
     ),
     ToolSpec(
+        name="computer_request_takeover",
+        description="Ask the user to take control of your computer for a step that needs a human: a login, a CAPTCHA, a payment, a judgement call, or checking your work. After calling it, tell the user exactly what to do and end your turn; they will message you when they hand control back. While the user has control, your input and navigation tools are refused.",
+        parameters=_obj({"reason": {"type": "string", "description": "What you need the user to do, in one or two sentences"}}, ["reason"]),
+        group="computer",
+        needs_approval=False,
+    ),
+    ToolSpec(
         name="computer_send_input",
         description="Send pointer or keyboard input to the sandbox browser. Coordinates are page pixels at the screenshot's size (1280x720).",
         parameters=_obj(
@@ -195,7 +202,8 @@ def describe_tools(specs: List[ToolSpec]) -> str:
         lines.append(
             "- Your computer: a sandboxed Linux container with a Chromium browser and a shell, with internet access. "
             "Navigate with computer_browser_navigate, then computer_screenshot to see the page, computer_send_input to click or type, "
-            "and computer_terminal_execute for commands. If a computer tool says the computer is not running, call computer_start first."
+            "and computer_terminal_execute for commands. If a computer tool says the computer is not running, call computer_start first. "
+            "The user can watch the same desktop live and take control of it; when a step needs a human, call computer_request_takeover."
         )
     if "github" in groups:
         lines.append("- GitHub: github_list_issues and github_create_issue act through the user's connected GitHub account.")
@@ -281,6 +289,11 @@ def build_invocation(
         return _computer_invocation("start", bot_id, {}, f"Start the computer for {bot_id}")
     if name == "computer_screenshot":
         return _computer_invocation("screenshot", bot_id, {}, f"Capture the computer screen for {bot_id}")
+    if name == "computer_request_takeover":
+        reason = _string(arguments, "reason", required=True, max_len=500).strip()
+        if not reason:
+            raise ToolCallError("'reason' is required.")
+        return _computer_invocation("request_takeover", bot_id, {"reason": reason}, f"Ask the user to take over the computer for {bot_id}: {reason[:120]}")
     if name == "computer_browser_navigate":
         url = _string(arguments, "url", required=True, max_len=4000).strip()
         if not re.match(r"^https?://[^\s]+$", url, re.IGNORECASE):

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Chromium
+Comment=Web browser
+Exec=chromium-browser
+Icon=web-browser
+Terminal=false
+StartupNotify=false

@@ -381,6 +381,13 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
                     if status == "completed":
                         result = outcome.get("result") or {}
                         payload = _compact_result(result)
+                        if call_name == "computer_request_takeover":
+                            yield _sse({
+                                "type": "computer.takeover_requested",
+                                "botMsgId": bot_msg_id,
+                                "botId": thread_id,
+                                "reason": str(arguments.get("reason") or ""),
+                            })
                         screenshot = _screenshot_message(result)
                         if screenshot is not None:
                             if _model_accepts_images(selected_model, llm_config):

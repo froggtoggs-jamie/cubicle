@@ -1,0 +1,5 @@
+#!/bin/sh
+# Dock launcher for Chromium. It uses the same profile directory as the
+# browser Playwright started, so Chromium opens a new window in that running
+# instance instead of a second, uncontrolled one.
+exec "__CHROME__" --user-data-dir=/tmp/profile --no-first-run --no-default-browser-check "$@"

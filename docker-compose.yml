@@ -55,7 +55,7 @@ services:
       COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
       # Computer provider: fake (default) or docker (needs the `computer` profile).
       COMPUTER_PROVIDER: ${COMPUTER_PROVIDER:-fake}
-      COMPUTER_DOCKER_IMAGE: ${COMPUTER_DOCKER_IMAGE:-open-grok-bot-computer:1.62.1}
+      COMPUTER_DOCKER_IMAGE: ${COMPUTER_DOCKER_IMAGE:-open-grok-bot-computer:2.0.0}
       COMPUTER_DOCKER_NETWORK: open-grok-bot-computers
       COMPUTER_DOCKER_WORKSPACE_MODE: ${COMPUTER_DOCKER_WORKSPACE_MODE:-volume}
       COMPUTER_DOCKER_HOST_WORKSPACE_ROOT: ${COMPUTER_DOCKER_HOST_WORKSPACE_ROOT:-}
@@ -118,7 +118,7 @@ services:
   # as a service. The API starts one container per bot from this image.
   computer-runtime:
     build: ./runtime
-    image: ${COMPUTER_DOCKER_IMAGE:-open-grok-bot-computer:1.62.1}
+    image: ${COMPUTER_DOCKER_IMAGE:-open-grok-bot-computer:2.0.0}
     profiles:
       - computer
     deploy:

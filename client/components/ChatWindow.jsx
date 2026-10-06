@@ -177,6 +177,27 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
               if (event.type === 'tool.expired') {
                 setPendingApprovals((prev) => prev.filter((approval) => approval.requestId !== event.requestId));
               }
+              // Keep a per-message record of the tools the model used so the
+              // reply shows them, matching what is persisted in raw_payload.
+              setMessages((prev) =>
+                prev.map((msg) => {
+                  if (msg.id !== streamingMsgId) return msg;
+                  const key = event.requestId || `${event.callName || event.tool}-${Date.now()}`;
+                  const others = (msg.toolCalls || []).filter((call) => call.id !== key);
+                  return {
+                    ...msg,
+                    toolCalls: [
+                      ...others,
+                      {
+                        id: key,
+                        name: event.callName || event.tool,
+                        status: event.type.replace('tool.', ''),
+                        error: event.error || null,
+                      },
+                    ],
+                  };
+                })
+              );
             } else if (event.type === 'content.delta') {
               setMessages((prev) =>
                 prev.map((msg) =>

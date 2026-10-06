@@ -76,9 +76,11 @@ class MuapiService:
         messages: List[Dict[str, str]],
         system_prompt: str = "",
         config: Optional[LLMConfig] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Stream chat completions from MUAPI API endpoint.
+        Stream chat completions from MUAPI API endpoint. `tools` is accepted
+        for interface parity and ignored: MUAPI takes a single prompt.
         Uses exact user-selected model slug without any model remapping or fallback.
         """
         config = config or resolve_llm_config(storage_service.get_settings())

@@ -39,11 +39,31 @@ def build_headers(config: LLMConfig) -> Dict[str, str]:
     return headers
 
 
-def build_messages(messages: List[Dict[str, Any]], system_prompt: str = "") -> List[Dict[str, Any]]:
-    """Convert the stored transcript into an OpenAI `messages` array.
+def _tool_call_entries(tool_calls: Any) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    for call in tool_calls or []:
+        if not isinstance(call, dict) or not call.get("name"):
+            continue
+        arguments = call.get("arguments")
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments or {})
+        entries.append(
+            {
+                "id": str(call.get("id") or f"call_{len(entries)}"),
+                "type": "function",
+                "function": {"name": str(call["name"]), "arguments": arguments},
+            }
+        )
+    return entries
 
-    User turns with an attached image become multimodal content parts. Data
-    URLs and hosted URLs are both accepted by OpenAI-style vision endpoints.
+
+def build_messages(messages: List[Dict[str, Any]], system_prompt: str = "") -> List[Dict[str, Any]]:
+    """Convert the transcript into an OpenAI `messages` array.
+
+    User turns with an attached image become multimodal content parts; a
+    message whose `content` is already a list of parts is passed through.
+    Assistant turns may carry `tool_calls` and `tool` turns carry the result
+    for one `tool_call_id`, which is how the agent loop feeds results back.
     """
     result: List[Dict[str, Any]] = []
     if system_prompt and system_prompt.strip():
@@ -51,18 +71,40 @@ def build_messages(messages: List[Dict[str, Any]], system_prompt: str = "") -> L
 
     for message in messages:
         role = message.get("role")
+        if role == "tool":
+            result.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(message.get("tool_call_id") or ""),
+                    "content": str(message.get("content") or ""),
+                }
+            )
+            continue
         if role not in {"user", "assistant"}:
             continue
-        text = str(message.get("content") or "")
-        image_url = message.get("image_url") if role == "user" else None
-        if image_url:
-            parts: List[Dict[str, Any]] = []
-            if text.strip():
-                parts.append({"type": "text", "text": text})
-            parts.append({"type": "image_url", "image_url": {"url": image_url}})
-            result.append({"role": role, "content": parts})
-        elif text.strip():
-            result.append({"role": role, "content": text})
+
+        content = message.get("content")
+        entry: Optional[Dict[str, Any]] = None
+        if isinstance(content, list):
+            entry = {"role": role, "content": content}
+        else:
+            text = str(content or "")
+            image_url = message.get("image_url") if role == "user" else None
+            if image_url:
+                parts: List[Dict[str, Any]] = []
+                if text.strip():
+                    parts.append({"type": "text", "text": text})
+                parts.append({"type": "image_url", "image_url": {"url": image_url}})
+                entry = {"role": role, "content": parts}
+            elif text.strip():
+                entry = {"role": role, "content": text}
+
+        tool_calls = _tool_call_entries(message.get("tool_calls")) if role == "assistant" else []
+        if tool_calls:
+            entry = entry or {"role": "assistant", "content": ""}
+            entry["tool_calls"] = tool_calls
+        if entry is not None:
+            result.append(entry)
     return result
 
 
@@ -71,6 +113,7 @@ def build_request_body(
     messages: List[Dict[str, Any]],
     system_prompt: str,
     config: LLMConfig,
+    tools: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "model": model,
@@ -79,7 +122,41 @@ def build_request_body(
     }
     if config.reasoning_effort:
         body["reasoning_effort"] = config.reasoning_effort
+    if tools:
+        body["tools"] = tools
     return body
+
+
+def _finish_tool_calls(accumulator: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    calls = []
+    for index in sorted(accumulator):
+        entry = accumulator[index]
+        if not entry.get("name"):
+            continue
+        calls.append(
+            {
+                "id": entry.get("id") or f"call_{index}",
+                "name": entry["name"],
+                "arguments": entry.get("arguments") or "{}",
+            }
+        )
+    return calls
+
+
+def _message_tool_calls(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    calls = []
+    for index, call in enumerate(message.get("tool_calls") or []):
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function") or {}
+        name = function.get("name") or call.get("name")
+        if not name:
+            continue
+        arguments = function.get("arguments", call.get("arguments"))
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments or {})
+        calls.append({"id": str(call.get("id") or f"call_{index}"), "name": str(name), "arguments": arguments})
+    return calls
 
 
 def _error_detail(status_code: int, raw_body: bytes, url: str) -> str:
@@ -156,23 +233,36 @@ class OpenAICompatibleService:
         self._client_factory = client_factory or _default_client_factory
         self._model_cache: Dict[str, Any] = {}
 
+    def cached_model_info(self, config: LLMConfig, model_id: str) -> Optional[ModelInfo]:
+        """The catalog entry for a model if `/models` was fetched recently."""
+        for cached in self._model_cache.values():
+            if not cached.get("models"):
+                continue
+            for info in cached["models"]:
+                if info.id == model_id:
+                    return info
+        return None
+
     async def stream_chat_completion(
         self,
         model: str,
         messages: List[Dict[str, Any]],
         system_prompt: str,
         config: LLMConfig,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Yield `content.delta` / `reasoning.delta` events, then `turn.completed`.
+        """Yield `content.delta` / `reasoning.delta` / `tool_calls` events, then `turn.completed`.
 
         `reasoning.delta` carries the model's thinking (`reasoning_content`
-        from llama.cpp-style servers, `reasoning` from OpenRouter). Errors are
-        reported the same way the rest of the app expects: the error text
-        arrives as a content delta and the turn completes with ok=False.
+        from llama.cpp-style servers, `reasoning` from OpenRouter). A single
+        `tool_calls` event with the fully assembled calls is emitted when the
+        model asks to use tools. Errors are reported the same way the rest of
+        the app expects: the error text arrives as a content delta and the turn
+        completes with ok=False.
         """
         target_model = (model or config.default_model).strip()
         url = f"{config.base_url}/chat/completions"
-        body = build_request_body(target_model, messages, system_prompt, config)
+        body = build_request_body(target_model, messages, system_prompt, config, tools=tools)
         headers = build_headers(config)
 
         try:
@@ -193,6 +283,7 @@ class OpenAICompatibleService:
                         return
 
                     produced_output = False
+                    tool_accumulator: Dict[int, Dict[str, Any]] = {}
                     async for line in response.aiter_lines():
                         line = line.strip()
                         # OpenRouter emits ": OPENROUTER PROCESSING" keep-alive comments.
@@ -224,6 +315,25 @@ class OpenAICompatibleService:
                             if content:
                                 produced_output = True
                                 yield {"type": "content.delta", "delta": content}
+                            for call in delta.get("tool_calls") or []:
+                                if not isinstance(call, dict):
+                                    continue
+                                index = call.get("index", 0)
+                                if not isinstance(index, int):
+                                    index = 0
+                                entry = tool_accumulator.setdefault(index, {"id": None, "name": "", "arguments": ""})
+                                if call.get("id"):
+                                    entry["id"] = str(call["id"])
+                                function = call.get("function") or {}
+                                if function.get("name") and not entry["name"]:
+                                    entry["name"] = str(function["name"])
+                                if isinstance(function.get("arguments"), str):
+                                    entry["arguments"] += function["arguments"]
+
+                    calls = _finish_tool_calls(tool_accumulator)
+                    if calls:
+                        produced_output = True
+                        yield {"type": "tool_calls", "calls": calls}
 
                     if not produced_output:
                         yield {
@@ -254,6 +364,7 @@ class OpenAICompatibleService:
 
         text = ""
         reasoning = ""
+        calls: List[Dict[str, Any]] = []
         choices = data.get("choices") if isinstance(data, dict) else None
         if isinstance(choices, list) and choices:
             message = choices[0].get("message") or {}
@@ -267,13 +378,17 @@ class OpenAICompatibleService:
                 )
             elif content:
                 text = str(content)
-        if not text:
+            calls = _message_tool_calls(message)
+        if not text and not calls:
             yield {"type": "content.delta", "delta": "Error: the model returned an empty response."}
             yield {"type": "turn.completed", "ok": False}
             return
         if reasoning:
             yield {"type": "reasoning.delta", "delta": reasoning}
-        yield {"type": "content.delta", "delta": text}
+        if text:
+            yield {"type": "content.delta", "delta": text}
+        if calls:
+            yield {"type": "tool_calls", "calls": calls}
         yield {"type": "turn.completed", "ok": True}
 
     async def list_models(self, config: LLMConfig, refresh: bool = False) -> List[ModelInfo]:

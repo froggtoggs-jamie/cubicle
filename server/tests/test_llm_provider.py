@@ -137,6 +137,34 @@ class RequestBuildingTests(unittest.TestCase):
         self.assertEqual(messages[3], {"role": "user", "content": "Thanks"})
         self.assertEqual(len(messages), 4)
 
+    def test_messages_carry_tool_calls_and_tool_results(self):
+        history = [
+            {"role": "user", "content": "List the workspace"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_1", "name": "workspace_list", "arguments": {"path": "."}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{\"entries\": []}"},
+            {"role": "user", "content": [{"type": "text", "text": "[Screenshot]"}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}]},
+        ]
+        messages = build_messages(history, "sys")
+        self.assertEqual(messages[1], {"role": "user", "content": "List the workspace"})
+        self.assertEqual(messages[2]["role"], "assistant")
+        self.assertEqual(messages[2]["content"], "")
+        self.assertEqual(
+            messages[2]["tool_calls"],
+            [{"id": "call_1", "type": "function", "function": {"name": "workspace_list", "arguments": "{\"path\": \".\"}"}}],
+        )
+        self.assertEqual(messages[3], {"role": "tool", "tool_call_id": "call_1", "content": "{\"entries\": []}"})
+        self.assertEqual(messages[4]["content"][1]["type"], "image_url")
+
+    def test_tools_are_only_sent_when_provided(self):
+        history = [{"role": "user", "content": "hi"}]
+        self.assertNotIn("tools", build_request_body("m", history, "", _config()))
+        tools = [{"type": "function", "function": {"name": "x", "parameters": {"type": "object", "properties": {}}}}]
+        self.assertEqual(build_request_body("m", history, "", _config(), tools=tools)["tools"], tools)
+
     def test_reasoning_effort_is_only_sent_when_configured(self):
         history = [{"role": "user", "content": "hi"}]
         body = build_request_body("m", history, "", _config())
@@ -196,6 +224,74 @@ class StreamingTests(unittest.TestCase):
                 {"type": "reasoning.delta", "delta": "..."},
                 {"type": "content.delta", "delta": "Hel"},
                 {"type": "content.delta", "delta": "lo"},
+                {"type": "turn.completed", "ok": True},
+            ],
+        )
+
+    def test_streamed_tool_call_fragments_are_assembled(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=_sse(
+                    {"choices": [{"delta": {"content": "Let me check."}}]},
+                    {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "workspace_list", "arguments": ""}}]}}]},
+                    {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"pa"}}]}}]},
+                    {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "th\": \".\"}"}}]}}]},
+                    {"choices": [{"delta": {"tool_calls": [{"index": 1, "id": "call_2", "function": {"name": "computer_screenshot", "arguments": "{}"}}]}}]},
+                    {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+                ),
+            )
+
+        tools = [{"type": "function", "function": {"name": "workspace_list", "parameters": {"type": "object", "properties": {}}}}]
+        events = _collect(
+            _service_with_handler(handler).stream_chat_completion(
+                "m", [{"role": "user", "content": "hi"}], "", _config(), tools=tools
+            )
+        )
+        self.assertEqual(captured["body"]["tools"], tools)
+        self.assertEqual(
+            events,
+            [
+                {"type": "content.delta", "delta": "Let me check."},
+                {
+                    "type": "tool_calls",
+                    "calls": [
+                        {"id": "call_1", "name": "workspace_list", "arguments": "{\"path\": \".\"}"},
+                        {"id": "call_2", "name": "computer_screenshot", "arguments": "{}"},
+                    ],
+                },
+                {"type": "turn.completed", "ok": True},
+            ],
+        )
+
+    def test_non_streaming_tool_calls_are_reported(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "workspace_read", "arguments": "{\"path\":\"a\"}"}}],
+                            }
+                        }
+                    ]
+                },
+            )
+
+        events = _collect(
+            _service_with_handler(handler).stream_chat_completion("m", [{"role": "user", "content": "hi"}], "", _config())
+        )
+        self.assertEqual(
+            events,
+            [
+                {"type": "tool_calls", "calls": [{"id": "c1", "name": "workspace_read", "arguments": "{\"path\":\"a\"}"}]},
                 {"type": "turn.completed", "ok": True},
             ],
         )

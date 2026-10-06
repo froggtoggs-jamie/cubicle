@@ -1,0 +1,119 @@
+import unittest
+
+from app.services.action_gateway import ActionInvocation
+from app.services.llm_tools import (
+    ToolCallError,
+    available_tools,
+    build_invocation,
+    describe_tools,
+    openai_tool_definitions,
+    parse_arguments,
+)
+from app.services.workspace_service import WorkspaceToolCall
+
+
+class ToolCatalogTests(unittest.TestCase):
+    def test_tool_groups_follow_what_is_configured(self):
+        names = lambda specs: [s.name for s in specs]  # noqa: E731
+        base = names(available_tools(computer=False, github=False))
+        self.assertEqual(base, ["workspace_list", "workspace_read", "workspace_write"])
+        with_computer = names(available_tools(computer=True, github=False))
+        self.assertIn("computer_screenshot", with_computer)
+        self.assertNotIn("github_list_issues", with_computer)
+        everything = names(available_tools(computer=True, github=True))
+        self.assertIn("github_create_issue", everything)
+
+    def test_openai_definitions_are_well_formed(self):
+        definitions = openai_tool_definitions(available_tools(computer=True, github=True))
+        for definition in definitions:
+            self.assertEqual(definition["type"], "function")
+            function = definition["function"]
+            self.assertRegex(function["name"], r"^[a-zA-Z0-9_-]+$")
+            self.assertTrue(function["description"])
+            self.assertEqual(function["parameters"]["type"], "object")
+            self.assertFalse(function["parameters"]["additionalProperties"])
+
+    def test_description_explains_approvals_and_the_computer(self):
+        text = describe_tools(available_tools(computer=True, github=False))
+        self.assertIn("computer_start first", text)
+        self.assertIn("Tools that need approval:", text)
+        self.assertIn("workspace_write", text)
+        self.assertNotIn("github", text)
+        self.assertEqual(describe_tools([]), "")
+
+
+class ArgumentParsingTests(unittest.TestCase):
+    def test_arguments_accept_json_text_or_objects(self):
+        self.assertEqual(parse_arguments('{"path": "notes"}'), {"path": "notes"})
+        self.assertEqual(parse_arguments({"a": 1}), {"a": 1})
+        self.assertEqual(parse_arguments(""), {})
+        self.assertEqual(parse_arguments(None), {})
+        with self.assertRaisesRegex(ToolCallError, "not valid JSON"):
+            parse_arguments("{oops")
+        with self.assertRaisesRegex(ToolCallError, "JSON object"):
+            parse_arguments("[1, 2]")
+
+
+class BuildInvocationTests(unittest.TestCase):
+    def test_workspace_calls_become_workspace_tool_calls(self):
+        listing = build_invocation("workspace_list", {}, "bot-1")
+        self.assertIsInstance(listing, WorkspaceToolCall)
+        self.assertEqual((listing.name, listing.path), ("workspace.list", "."))
+
+        write = build_invocation("workspace_write", {"path": "notes/a.md", "content": "hi"}, "bot-1")
+        self.assertEqual((write.name, write.path, write.content), ("workspace.write", "notes/a.md", "hi"))
+
+        with self.assertRaisesRegex(ToolCallError, "'path' is required"):
+            build_invocation("workspace_read", {}, "bot-1")
+        with self.assertRaisesRegex(ToolCallError, "must be a string"):
+            build_invocation("workspace_read", {"path": 5}, "bot-1")
+
+    def test_computer_calls_are_scoped_to_the_bot(self):
+        nav = build_invocation("computer_browser_navigate", {"url": "https://example.com"}, "bot-1")
+        self.assertIsInstance(nav, ActionInvocation)
+        self.assertEqual(nav.name, "computer.browser_navigate")
+        self.assertEqual(nav.arguments["bot_id"], "bot-1")
+        self.assertEqual(nav.arguments["computer_id"], nav.target["computer_id"])
+        self.assertEqual(nav.arguments["url"], "https://example.com")
+
+        with self.assertRaisesRegex(ToolCallError, "http or https"):
+            build_invocation("computer_browser_navigate", {"url": "file:///etc/passwd"}, "bot-1")
+
+        click = build_invocation("computer_send_input", {"type": "click", "x": 10, "y": 20.5}, "bot-1")
+        self.assertEqual(click.arguments["event"], {"type": "click", "x": 10.0, "y": 20.5, "button": "left"})
+        typed = build_invocation("computer_send_input", {"type": "type", "text": "hello"}, "bot-1")
+        self.assertEqual(typed.arguments["event"], {"type": "type", "text": "hello"})
+        with self.assertRaisesRegex(ToolCallError, "'x' is required"):
+            build_invocation("computer_send_input", {"type": "click"}, "bot-1")
+        with self.assertRaisesRegex(ToolCallError, "one of click"):
+            build_invocation("computer_send_input", {"type": "drag"}, "bot-1")
+
+        files = build_invocation("computer_files_list", {}, "bot-1")
+        self.assertEqual(files.arguments["path"], "/workspace")
+        self.assertEqual(build_invocation("computer_screenshot", {}, "bot-1").name, "computer.screenshot")
+        self.assertEqual(build_invocation("computer_start", {}, "bot-1").name, "computer.start")
+
+    def test_github_calls_match_the_slash_command_shape(self):
+        listing = build_invocation("github_list_issues", {"owner": "octo", "repo": "demo"}, "bot-1")
+        self.assertEqual(listing.name, "connector.github_list_issues")
+        self.assertEqual(listing.arguments, {"owner": "octo", "repo": "demo", "state": "open", "per_page": 10})
+
+        created = build_invocation(
+            "github_create_issue", {"owner": "octo", "repo": "demo", "title": "Bug", "body": "details"}, "bot-1"
+        )
+        self.assertEqual(created.name, "connector.github_create_issue")
+        self.assertEqual(created.arguments_for_display["body_bytes"], 7)
+        self.assertNotIn("body", created.arguments_for_display)
+
+        with self.assertRaisesRegex(ToolCallError, "letters, numbers"):
+            build_invocation("github_list_issues", {"owner": "bad owner", "repo": "demo"}, "bot-1")
+        with self.assertRaisesRegex(ToolCallError, "open, closed, or all"):
+            build_invocation("github_list_issues", {"owner": "octo", "repo": "demo", "state": "stale"}, "bot-1")
+
+    def test_unknown_tools_are_rejected(self):
+        with self.assertRaisesRegex(ToolCallError, "Unknown tool"):
+            build_invocation("translator", {}, "bot-1")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -26,6 +26,7 @@ This is an independent open-source project and is not affiliated with xAI.
 - **Markdown messages:** Render assistant replies as Markdown in the chat transcript.
 - **Visible thinking:** Reasoning models' thinking (`reasoning_content` or `reasoning` in the stream) is shown live in a collapsible block above the reply. It is stored for display but never replayed to the model.
 - **Voice dictation:** Use the browser's Web Speech API when the browser supports it.
+- **Model tool calling:** The model receives OpenAI-style tool definitions for the shared workspace, its sandboxed computer (when the Docker runtime is on), and connected GitHub, and can call them itself. Every call goes through the same deny-by-default gateway and approval cards as the slash commands; screenshots are shown to vision models as images.
 - **Approved workspace tools:** Explicit `/workspace list`, `/workspace read`, and `/workspace write` requests pause for user approval, stay inside `WORKSPACE_ROOT`, and produce audit events.
 - **Governed action gateway:** Workspace actions use a structured request/result contract, a deny-by-default registry, approval state, and redacted lifecycle audit records.
 - **Settings drawer:** Choose the provider, base URL, API key, default model, optional `reasoning_effort`, Composio key, and local profile details.
@@ -178,6 +179,9 @@ The server reads these variables from the environment:
 | `LLM_API_KEY` | empty | Provider credential used when no key is saved in local settings. Optional for local servers |
 | `LLM_BASE_URL` | per provider | API base URL. Defaults to `https://openrouter.ai/api/v1` for `openai_compatible` and `https://api.muapi.ai/api/v1` for `muapi` |
 | `LLM_REASONING_EFFORT` | empty | When set it is sent verbatim as `reasoning_effort`. Common values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; which ones work depends on the server and model. Leave empty to let the server use its default |
+| `LLM_TOOLS_ENABLED` | `1` | Offer the governed tools to the model through function calling. Set `0` to keep only the explicit slash commands |
+| `LLM_MAX_TOOL_ROUNDS` | `8` | Maximum model round-trips in one turn while it keeps calling tools |
+| `LLM_SCREENSHOTS_TO_MODEL` | `auto` | Send sandbox screenshots to the model as images: `auto` (unless the model catalog says it has no vision), `always`, or `never` |
 | `MUAPI_API_KEY`, `MUAPI_BASE_URL` | empty | Legacy names. When `LLM_PROVIDER` is unset and `MUAPI_API_KEY` is present, the provider defaults to `muapi` and these values are used |
 | `COMPOSIO_API_KEY` | empty | Optional connector credential used when no key is saved in local settings |
 | `DEFAULT_MODEL` | `x-ai/grok-4.5` (`grok-4-5` for MUAPI) | Initial model used for new settings and bots |
@@ -272,12 +276,27 @@ The main code areas are:
 4. An explicit workspace or connector request becomes a structured action request and is checked against the deny-by-default gateway registry.
 5. The gateway pauses the stream for approval when required, then executes the registered action.
 6. The gateway emits normalized action lifecycle records; the client receives compatible tool events and the structured result.
-7. The server sends the system prompt, full conversation history, and tool result to the configured provider as an OpenAI-style `messages` array (MUAPI receives a flattened prompt instead).
-8. Provider output is forwarded as SSE deltas and the completed assistant message is persisted.
+7. The server sends the system prompt (including a description of the available tools), full conversation history, any slash-command result, and the tool definitions to the configured provider as an OpenAI-style `messages` array (MUAPI receives a flattened prompt and no tools).
+8. If the model calls tools, each call is validated, turned into a gateway action, approved where required, executed, and its result is appended as a `tool` message; the model is then called again, up to `LLM_MAX_TOOL_ROUNDS` times.
+9. Provider output is forwarded as SSE deltas and the completed assistant message is persisted together with its thinking and the tools it used.
 
 ### Product direction
 
 The prototype follows a local-first path: persistent bot personas and histories, explicit capabilities, user-visible approvals, provider flexibility, optional app connectors, and an opt-in isolated browser runtime. The next meaningful layers are durable memory and routines, voice input/output, human takeover, desktop/VNC presentation, background jobs, and authenticated multi-user deployment. They are intentionally documented as roadmap items rather than implied by the current UI.
+
+### Tools the model can call
+
+With an OpenAI-compatible provider the model is offered these functions. The gateway registry decides which need approval; the model is told which ones do and is instructed to stop and ask when a call is denied.
+
+| Tool | Gateway action | Approval |
+| --- | --- | --- |
+| `workspace_list`, `workspace_read`, `workspace_write` | `workspace.*` | yes |
+| `computer_start`, `computer_screenshot`, `computer_files_list` | `computer.*` | no |
+| `computer_browser_navigate`, `computer_terminal_execute`, `computer_send_input` | `computer.*` | yes |
+| `github_list_issues` | `connector.github_list_issues` | no |
+| `github_create_issue` | `connector.github_create_issue` | yes |
+
+Computer tools appear only when `COMPUTER_PROVIDER=docker`; GitHub tools only when a Composio key is configured. Results are trimmed to 20 KB before they are returned to the model, and a screenshot is attached as an image message when the model accepts images.
 
 ### Approved workspace commands
 

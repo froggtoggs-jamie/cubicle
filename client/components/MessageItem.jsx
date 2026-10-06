@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FiX, FiChevronRight } from 'react-icons/fi';
+import { FiX, FiChevronRight, FiTool } from 'react-icons/fi';
 
 function formatMsgTime(createdAt) {
   if (!createdAt) return '';
@@ -56,12 +56,42 @@ function ThinkingBlock({ reasoning, answerStarted, isStreaming }) {
   );
 }
 
+const TOOL_STATUS_STYLES = {
+  completed: 'text-emerald-400',
+  started: 'text-blue-300',
+  running: 'text-blue-300',
+  failed: 'text-rose-400',
+  denied: 'text-amber-400',
+  expired: 'text-amber-400',
+  rejected: 'text-rose-400',
+};
+
+// Compact list of the tools the model called while producing a reply.
+function ToolCallList({ calls }) {
+  return (
+    <div className="mb-2.5 flex flex-wrap gap-1.5">
+      {calls.map((call, index) => (
+        <span
+          key={call.id || `${call.name}-${index}`}
+          title={call.error || call.summary || call.name}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-[#2b2b32] bg-[#141416]/70 px-2 py-1 text-[10px] font-mono text-zinc-300"
+        >
+          <FiTool className="text-[10px] text-zinc-500" />
+          <span>{call.name}</span>
+          <span className={TOOL_STATUS_STYLES[call.status] || 'text-zinc-500'}>{call.status}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function MessageItem({ message }) {
   const isUser = message.sender === 'user';
   const isError = message.isError || message.text?.toLowerCase().startsWith('error:');
   const formattedTime = formatMsgTime(message.created_at);
   // Live streams carry `reasoning`; persisted history carries it in raw_payload.
   const reasoning = message.reasoning || message.raw_payload?.reasoning || '';
+  const toolCalls = message.toolCalls || message.raw_payload?.tool_calls || [];
 
   if (isUser) {
     return (
@@ -113,6 +143,7 @@ export default function MessageItem({ message }) {
             isStreaming={Boolean(message.isStreaming)}
           />
         )}
+        {toolCalls.length > 0 && <ToolCallList calls={toolCalls} />}
         <ReactMarkdown
           components={{
             p: ({ node, ...props }) => <div className="mb-2 last:mb-0 leading-relaxed" {...props} />,

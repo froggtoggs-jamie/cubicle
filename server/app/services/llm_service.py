@@ -20,13 +20,15 @@ async def stream_chat_completion(
     messages: List[Dict[str, Any]],
     system_prompt: str = "",
     config: Optional[LLMConfig] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     config = config or current_llm_config()
     if config.provider == PROVIDER_MUAPI:
+        # MUAPI takes a single prompt; it cannot do function calling.
         generator = muapi_service.stream_chat_completion(model, messages, system_prompt, config)
     else:
         generator = openai_compatible_service.stream_chat_completion(
-            model, messages, system_prompt, config
+            model, messages, system_prompt, config, tools=tools
         )
     async for event in generator:
         yield event

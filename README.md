@@ -254,7 +254,7 @@ The main code areas are:
 | `server/app/services/workspace_service.py` | Confined list/read/write workspace tools |
 | `server/app/services/approval_broker.py` | Pending approval coordination and audit events |
 | `server/app/services/action_gateway.py` | Registered action policy, approval handoff, execution, and lifecycle audit |
-| `server/app/services/composio_service.py` | Server-side Composio MCP calls and normalized GitHub issue results |
+| `server/app/services/composio_service.py` | Composio v3 REST calls (auth configs, connected accounts, tool execution) and normalized GitHub issue results |
 | `server/app/services/connector_actions.py` | Explicit connector command parsing and gateway registration |
 | `server/app/services/computer_provider.py` | Provider contract and deterministic local computer adapter |
 | `server/app/services/docker_computer_provider.py` | Per-bot Docker lifecycle, token boundary, and runtime operations |

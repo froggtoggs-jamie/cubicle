@@ -210,13 +210,19 @@ export async function fetchConnectionStatus(slugs = []) {
 
 export async function authorizeConnector(slug) {
   const res = await apiFetch(`${API_BASE_URL}/connectors/${slug}/authorize`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Failed to authorize ${slug}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.detail || `Failed to authorize ${slug}`);
+  }
   return res.json();
 }
 
 export async function disconnectConnector(slug) {
   const res = await apiFetch(`${API_BASE_URL}/connectors/${slug}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Failed to disconnect ${slug}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.detail || `Failed to disconnect ${slug}`);
+  }
   return res.json();
 }
 

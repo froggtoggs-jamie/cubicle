@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from typing import List, Optional
 from datetime import datetime, timezone
 from app.config import settings
-from app.services.composio_service import composio_service
+from app.services.composio_service import ConnectorServiceError, composio_service
 from app.services.storage_service import storage_service
 
 router = APIRouter(prefix="/api/v1/connectors", tags=["connectors"])
@@ -47,10 +47,6 @@ _toolkit_cache_at: float = 0
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-async def _composio_tool(key: str, name: str, args: dict) -> dict:
-    return await composio_service.call_tool(name, args, api_key=key)
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
@@ -109,16 +105,7 @@ async def connection_status(services: str = ""):
         return {"services": {slug: {"connected": False} for slug in slugs}}
 
     try:
-        out = await _composio_tool(composio_key, "COMPOSIO_MANAGE_CONNECTIONS",
-                                   {"toolkits": [{"name": s, "action": "list"} for s in slugs]})
-        results = (out or {}).get("data", {}).get("results", {})
-        status = {}
-        for slug in slugs:
-            r = results.get(slug, {})
-            accounts = r.get("accounts") or []
-            active = any((a.get("status") or "").lower() == "active" for a in accounts) \
-                     or (r.get("status") or "").lower() == "active"
-            status[slug] = {"connected": active}
+        status = await composio_service.connection_status(slugs, api_key=composio_key)
         return {"services": status}
     except Exception as e:
         return {"services": {slug: {"connected": False} for slug in slugs}, "error": str(e)}
@@ -132,22 +119,18 @@ async def authorize(slug: str):
     if not composio_key:
         return JSONResponse({"error": "No Composio key configured"}, status_code=400)
     try:
-        out = await _composio_tool(composio_key, "COMPOSIO_MANAGE_CONNECTIONS",
-                                   {"toolkits": [{"name": slug, "action": "add"}]})
-        import re, json as jsonlib
-        raw = jsonlib.dumps(out)
-        urls = re.findall(r"https://[^\"\\\s]+", raw)
-        url = next((u for u in urls if any(k in u.lower() for k in ["composio", "connect", "auth"])), None) or (urls[0] if urls else None)
-        if not url:
-            return JSONResponse({"error": f"No auth link returned for {slug}"}, status_code=502)
+        link = await composio_service.create_auth_link(slug, api_key=composio_key)
         storage_service.add_audit_event({
             "event": "connector.authorization_requested",
             "connector": slug,
+            "connected_account_id": link.get("connected_account_id"),
             "created_at": _now(),
         })
-        return {"url": url}
-    except Exception as e:
+        return {"url": link["url"], "expires_at": link.get("expires_at")}
+    except ConnectorServiceError as e:
         return JSONResponse({"error": str(e)}, status_code=502)
+    except Exception as e:
+        return JSONResponse({"error": f"Authorization failed: {e}"}, status_code=502)
 
 
 @router.delete("/{slug}")
@@ -158,20 +141,13 @@ async def disconnect(slug: str):
     if not composio_key:
         return JSONResponse({"error": "No Composio key configured"}, status_code=400)
     try:
-        out = await _composio_tool(composio_key, "COMPOSIO_MANAGE_CONNECTIONS",
-                                   {"toolkits": [{"name": slug, "action": "list"}]})
-        accounts = (out or {}).get("data", {}).get("results", {}).get(slug, {}).get("accounts", [])
-        ids = [a.get("id") or a.get("account_id") or a.get("nanoid") for a in accounts]
-        ids = [i for i in ids if i]
-        for acc_id in ids:
-            await _composio_tool(composio_key, "COMPOSIO_MANAGE_CONNECTIONS",
-                                 {"toolkits": [{"name": slug, "action": "remove", "account_id": acc_id}]})
+        removed = await composio_service.disconnect(slug, api_key=composio_key)
         storage_service.add_audit_event({
             "event": "connector.disconnected",
             "connector": slug,
-            "removed": len(ids),
+            "removed": removed,
             "created_at": _now(),
         })
-        return {"removed": len(ids), "slug": slug}
+        return {"removed": removed, "slug": slug}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=502)

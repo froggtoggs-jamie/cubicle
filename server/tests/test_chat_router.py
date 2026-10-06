@@ -289,8 +289,40 @@ class ChatStreamRouteTests(unittest.TestCase):
         with mock.patch.object(chat_router.settings, "LLM_MAX_TOOL_ROUNDS", 2):
             _, events = self._run_turn(bot["id"], stream=_scripted_stream(recorder, [forever]), gateway=gateway)
 
-        self.assertEqual(len(recorder["rounds"]), 2)
+        # Two tool rounds, then one forced text-only round without tools.
+        self.assertEqual(len(recorder["rounds"]), 3)
+        self.assertIsNotNone(recorder["rounds"][1]["tools"])
+        self.assertIsNone(recorder["rounds"][2]["tools"])
+        self.assertIn("tool budget for this turn is used up", recorder["rounds"][2]["system_prompt"])
+        # The second round's calls were answered as skipped, never executed.
+        last_tool_message = recorder["rounds"][2]["messages"][-1]
+        self.assertEqual(last_tool_message["role"], "tool")
+        self.assertIn("skipped", last_tool_message["content"])
+        self.assertEqual([e["type"] for e in events].count("tool.started"), 1)
+        # The scripted model still produced no text, so the fallback note is shown.
         self.assertIn("Stopped after 2 tool rounds", "".join(e.get("delta", "") for e in events if e["type"] == "content.delta"))
+        saved = self.storage.get_messages(bot["id"])[-1]
+        self.assertEqual([r["status"] for r in saved["raw_payload"]["tool_calls"]], ["completed", "skipped"])
+
+    def test_forced_final_round_answer_is_used_when_the_model_gives_one(self):
+        bot = self.storage.get_bots()[0]
+        self.storage.add_message(
+            {"id": "m1", "thread_id": bot["id"], "bot_id": bot["id"], "sender": "user", "text": "loop"}
+        )
+        gateway, _ = self._gateway("allow")
+        recorder = {}
+        tool_round = [
+            {"type": "tool_calls", "calls": [{"id": "c", "name": "workspace_list", "arguments": "{}"}]},
+            {"type": "turn.completed", "ok": True},
+        ]
+        final_round = [{"type": "content.delta", "delta": "Here is what I found so far."}, {"type": "turn.completed", "ok": True}]
+        with mock.patch.object(chat_router.settings, "LLM_MAX_TOOL_ROUNDS", 1):
+            _, events = self._run_turn(bot["id"], stream=_scripted_stream(recorder, [tool_round, final_round]), gateway=gateway)
+
+        self.assertEqual(len(recorder["rounds"]), 2)
+        text = "".join(e.get("delta", "") for e in events if e["type"] == "content.delta")
+        self.assertEqual(text, "Here is what I found so far.")
+        self.assertNotIn("Stopped after", text)
 
     def test_muapi_provider_gets_no_tools(self):
         bot = self.storage.get_bots()[0]

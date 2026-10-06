@@ -28,7 +28,7 @@ class Settings:
     # Let the model call the governed tools (workspace, computer, connectors)
     # through OpenAI-style function calling. Approvals still apply.
     LLM_TOOLS_ENABLED: bool = os.getenv("LLM_TOOLS_ENABLED", "1").strip().lower() in {"1", "true", "yes"}
-    LLM_MAX_TOOL_ROUNDS: int = int(os.getenv("LLM_MAX_TOOL_ROUNDS", "8"))
+    LLM_MAX_TOOL_ROUNDS: int = int(os.getenv("LLM_MAX_TOOL_ROUNDS", "12"))
     # Screenshots as images for the model: auto (unless the catalog says the
     # model has no vision), always, or never.
     LLM_SCREENSHOTS_TO_MODEL: str = os.getenv("LLM_SCREENSHOTS_TO_MODEL", "auto").strip().lower()

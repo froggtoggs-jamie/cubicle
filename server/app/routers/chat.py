@@ -271,6 +271,9 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
         messages: List[Dict[str, Any]] = list(formatted_history)
         max_rounds = max(1, settings.LLM_MAX_TOOL_ROUNDS)
         rounds = 0
+        # Once the tool budget is spent the model gets one last call without
+        # tools so the user always receives an answer rather than a cut-off.
+        final_answer_only = False
         try:
             while True:
                 rounds += 1
@@ -278,12 +281,21 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
                 pending_calls: List[Dict[str, Any]] = []
                 round_ok = True
 
+                round_prompt = turn_system_prompt
+                round_tools = tool_definitions
+                if final_answer_only:
+                    round_tools = None
+                    round_prompt = (
+                        f"{turn_system_prompt}\n\nThe tool budget for this turn is used up. "
+                        "Do not call tools. Reply to the user now with what you found, and say what is still unverified."
+                    )
+
                 async for event in llm_service.stream_chat_completion(
                     model=selected_model,
                     messages=messages,
-                    system_prompt=turn_system_prompt,
+                    system_prompt=round_prompt,
                     config=llm_config,
-                    tools=tool_definitions,
+                    tools=round_tools,
                 ):
                     if event["type"] == "content.delta":
                         round_text += event["delta"]
@@ -299,12 +311,13 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
                 if round_text.strip():
                     text_pieces.append(round_text)
 
-                if not pending_calls or not round_ok:
+                if final_answer_only:
+                    if not round_text.strip():
+                        note = f"[Stopped after {max_rounds} tool rounds without a final answer.]"
+                        text_pieces.append(note)
+                        yield _sse({"type": "content.delta", "botMsgId": bot_msg_id, "delta": note})
                     break
-                if rounds >= max_rounds:
-                    note = f"\n\n[Stopped after {max_rounds} tool rounds without a final answer.]"
-                    text_pieces.append(note)
-                    yield _sse({"type": "content.delta", "botMsgId": bot_msg_id, "delta": note})
+                if not pending_calls or not round_ok:
                     break
                 if round_text.strip():
                     # Visually separate a "let me check" preamble from the answer.
@@ -318,6 +331,22 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
                         for call in pending_calls
                     ],
                 })
+
+                if rounds >= max_rounds:
+                    # Budget spent: answer the pending calls without running
+                    # them, then ask for a text-only reply.
+                    for call in pending_calls:
+                        tool_records.append({"id": call["id"], "name": call["name"], "status": "skipped",
+                                             "error": "Tool budget for this turn was used up."})
+                        yield _sse({"type": "tool.failed", "tool": call["name"], "callName": call["name"],
+                                    "error": "Not run: the tool budget for this turn was used up."})
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": _tool_result_text({"status": "skipped", "error": "Tool budget used up; answer the user now."}),
+                        })
+                    final_answer_only = True
+                    continue
 
                 image_messages: List[Dict[str, Any]] = []
                 for call in pending_calls:

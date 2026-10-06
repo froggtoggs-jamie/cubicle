@@ -180,7 +180,7 @@ The server reads these variables from the environment:
 | `LLM_BASE_URL` | per provider | API base URL. Defaults to `https://openrouter.ai/api/v1` for `openai_compatible` and `https://api.muapi.ai/api/v1` for `muapi` |
 | `LLM_REASONING_EFFORT` | empty | When set it is sent verbatim as `reasoning_effort`. Common values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; which ones work depends on the server and model. Leave empty to let the server use its default |
 | `LLM_TOOLS_ENABLED` | `1` | Offer the governed tools to the model through function calling. Set `0` to keep only the explicit slash commands |
-| `LLM_MAX_TOOL_ROUNDS` | `8` | Maximum model round-trips in one turn while it keeps calling tools |
+| `LLM_MAX_TOOL_ROUNDS` | `12` | Maximum model round-trips in one turn while it keeps calling tools. When the budget is spent the model gets one final call without tools so it still answers |
 | `LLM_SCREENSHOTS_TO_MODEL` | `auto` | Send sandbox screenshots to the model as images: `auto` (unless the model catalog says it has no vision), `always`, or `never` |
 | `MUAPI_API_KEY`, `MUAPI_BASE_URL` | empty | Legacy names. When `LLM_PROVIDER` is unset and `MUAPI_API_KEY` is present, the provider defaults to `muapi` and these values are used |
 | `COMPOSIO_API_KEY` | empty | Optional connector credential used when no key is saved in local settings |

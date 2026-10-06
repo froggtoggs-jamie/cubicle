@@ -12,7 +12,8 @@ export default function Sidebar({
   activeTab,
   onSelectTab,
   onOpenSettings,
-  onOpenNewBot
+  onOpenNewBot,
+  turnStates
 }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [isIssueDismissed, setIsIssueDismissed] = useState(false);
@@ -118,6 +119,9 @@ export default function Sidebar({
       <div className="flex-1 overflow-y-auto px-2 space-y-1.5">
         {filteredBots.map((botItem) => {
           const isActive = activeBotId === botItem.id || (activeBotId === '' && botItem.id === displayBots[0]?.id);
+          const turn = turnStates?.[botItem.id];
+          const needsApproval = Boolean(turn?.pending_approval);
+          const isWorking = Boolean(turn && turn.status === 'running' && !needsApproval);
 
           return (
             <div
@@ -133,8 +137,17 @@ export default function Sidebar({
 
               <div className="flex-1 min-w-0 pt-0.5">
                 <div className="flex items-center justify-between">
-                  <h3 className={`text-xs font-semibold truncate ${isActive ? 'text-white' : 'text-zinc-200'}`}>
-                    {botItem.name}
+                  <h3 className={`text-xs font-semibold truncate flex items-center gap-1.5 ${isActive ? 'text-white' : 'text-zinc-200'}`}>
+                    <span className="truncate">{botItem.name}</span>
+                    {needsApproval && (
+                      <span
+                        className="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0 animate-pulse"
+                        title={`Waiting for your approval: ${turn.pending_approval.summary || ''}`}
+                      />
+                    )}
+                    {isWorking && (
+                      <span className="w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" title="Working on a reply" />
+                    )}
                   </h3>
                   {botItem.time && (
                     <span className="text-[10px] text-zinc-400 font-normal ml-1">

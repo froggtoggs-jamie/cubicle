@@ -9,6 +9,8 @@ import { FiPlus, FiMic, FiMicOff, FiMonitor, FiX, FiImage } from 'react-icons/fi
 import {
   sendMessage,
   subscribeToChatStream,
+  startTurn,
+  fetchTurnStatus,
   uploadImage,
   respondApproval,
 } from '../lib/api';
@@ -35,7 +37,7 @@ function formatHeaderDate(msgs) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessagesFor, streamingBots, onStreamingChange, onUpdateBotModel, onToggleComputer, defaultModel, prefill }) {
+export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessagesFor, streamingBots, onStreamingChange, turnStates, onUpdateBotModel, onToggleComputer, defaultModel, prefill }) {
   const [inputPrompt, setInputPrompt] = useState('');
   // Streaming is tracked per bot by the Dashboard so a reply keeps going
   // while another bot or tab is shown.
@@ -135,6 +137,151 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
     }
   };
 
+  // One live subscription per bot. Attaching replays the turn's events from
+  // `after`, so a reload or another machine rebuilds the reply in progress.
+  const attachmentsRef = useRef({});
+  const attachToTurn = (botId, turnId, after = 0) => {
+    const existing = attachmentsRef.current[botId];
+    if (existing && (!turnId || existing.turnId === turnId)) return;
+    if (existing) existing.close();
+
+    let streamingMsgId = null;
+    const updateMessages = (updater) => setMessagesFor(botId, updater);
+    const finish = () => {
+      setStreamingFor(botId, false);
+      const current = attachmentsRef.current[botId];
+      if (current && current.turnId === turnId) {
+        current.close();
+        delete attachmentsRef.current[botId];
+      }
+    };
+
+    setStreamingFor(botId, true);
+    const close = subscribeToChatStream(
+      botId,
+      { turnId, after },
+      (event) => {
+        if (event.type === 'turn.started') {
+          streamingMsgId = event.botMsgId;
+          updateMessages((prev) =>
+            prev.some((msg) => msg.id === streamingMsgId)
+              ? prev
+              : [
+                  ...prev,
+                  {
+                    id: streamingMsgId,
+                    sender: 'bot',
+                    text: '',
+                    reasoning: '',
+                    isStreaming: true,
+                    created_at: new Date().toISOString(),
+                  },
+                ]
+          );
+        } else if (event.type === 'request.opened') {
+          setPendingApprovals((prev) => [
+            ...prev.filter((approval) => approval.requestId !== event.requestId),
+            { ...event, botId },
+          ]);
+        } else if (event.type === 'computer.takeover_requested') {
+          setTakeoverRequests((prev) => [
+            ...prev.slice(-4),
+            { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '', botId },
+          ]);
+        } else if (['tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'tool.expired'].includes(event.type)) {
+          setToolEvents((prev) => [
+            ...prev.slice(-9),
+            { ...event, id: `${event.type}-${Date.now()}`, botId },
+          ]);
+          if (event.requestId) {
+            setPendingApprovals((prev) => prev.filter((approval) => approval.requestId !== event.requestId));
+          }
+          // Keep a per-message record of the tools the model used so the
+          // reply shows them, matching what is persisted in raw_payload.
+          updateMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id !== streamingMsgId) return msg;
+              const key = event.requestId || `${event.callName || event.tool}-${Date.now()}`;
+              const others = (msg.toolCalls || []).filter((call) => call.id !== key);
+              return {
+                ...msg,
+                toolCalls: [
+                  ...others,
+                  {
+                    id: key,
+                    name: event.callName || event.tool,
+                    status: event.type.replace('tool.', ''),
+                    error: event.error || null,
+                  },
+                ],
+              };
+            })
+          );
+        } else if (event.type === 'content.delta') {
+          updateMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === streamingMsgId
+                ? { ...msg, text: msg.text + event.delta }
+                : msg
+            )
+          );
+        } else if (event.type === 'reasoning.delta') {
+          // The model's thinking. Shown in a collapsible block, never
+          // merged into the answer text.
+          updateMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === streamingMsgId
+                ? { ...msg, reasoning: (msg.reasoning || '') + event.delta }
+                : msg
+            )
+          );
+        } else if (event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled') {
+          updateMessages((prev) =>
+            prev.map((msg) => (msg.id === streamingMsgId ? { ...msg, isStreaming: false } : msg))
+          );
+          if (event.type === 'turn.failed' && streamingMsgId) {
+            updateMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === streamingMsgId && !msg.text
+                  ? { ...msg, text: `Error: the reply failed on the server: ${event.error || 'unknown error'}` }
+                  : msg
+              )
+            );
+          }
+          finish();
+        } else if (event.type === 'turn.none') {
+          finish();
+        }
+      },
+      () => finish()
+    );
+    attachmentsRef.current[botId] = { turnId, close };
+  };
+
+  useEffect(() => () => {
+    Object.values(attachmentsRef.current).forEach((attachment) => attachment.close());
+  }, []);
+
+  // Follow a turn that is already running for this bot: after a reload, a
+  // bot switch, or when the server reports one started elsewhere.
+  const remoteTurnId = bot?.id ? turnStates?.[bot.id]?.turn_id : undefined;
+  useEffect(() => {
+    const botId = bot?.id;
+    if (!botId) return undefined;
+    let cancelled = false;
+    fetchTurnStatus(botId)
+      .then((status) => {
+        if (cancelled) return;
+        const turn = status?.turn;
+        if (turn && turn.status === 'running') attachToTurn(botId, turn.turn_id, 0);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bot?.id, remoteTurnId]);
+
   const handleSendMessage = async (e) => {
     e?.preventDefault();
     if ((!inputPrompt.trim() && !selectedImage) || isStreaming) return;
@@ -170,95 +317,9 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
     updateMessages((prev) => [...prev, userMsgObj]);
 
     try {
-      {
-        await sendMessage(botId, botId, userText, activeModel, finalImageUrl);
-        setStreamingFor(botId, true);
-        let streamingMsgId = null;
-
-        subscribeToChatStream(
-          botId,
-          activeModel,
-          (event) => {
-            if (event.type === 'turn.started') {
-              streamingMsgId = event.botMsgId;
-              updateMessages((prev) => [
-                ...prev,
-                {
-                  id: streamingMsgId,
-                  sender: 'bot',
-                  text: '',
-                  reasoning: '',
-                  isStreaming: true,
-                  created_at: new Date().toISOString(),
-                },
-              ]);
-            } else if (event.type === 'request.opened') {
-              setPendingApprovals((prev) => [
-                ...prev.filter((approval) => approval.requestId !== event.requestId),
-                { ...event, botId },
-              ]);
-            } else if (event.type === 'computer.takeover_requested') {
-              setTakeoverRequests((prev) => [
-                ...prev.slice(-4),
-                { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '', botId },
-              ]);
-            } else if (['tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'tool.expired'].includes(event.type)) {
-              setToolEvents((prev) => [
-                ...prev.slice(-9),
-                { ...event, id: `${event.type}-${Date.now()}`, botId },
-              ]);
-              if (event.type === 'tool.expired') {
-                setPendingApprovals((prev) => prev.filter((approval) => approval.requestId !== event.requestId));
-              }
-              // Keep a per-message record of the tools the model used so the
-              // reply shows them, matching what is persisted in raw_payload.
-              updateMessages((prev) =>
-                prev.map((msg) => {
-                  if (msg.id !== streamingMsgId) return msg;
-                  const key = event.requestId || `${event.callName || event.tool}-${Date.now()}`;
-                  const others = (msg.toolCalls || []).filter((call) => call.id !== key);
-                  return {
-                    ...msg,
-                    toolCalls: [
-                      ...others,
-                      {
-                        id: key,
-                        name: event.callName || event.tool,
-                        status: event.type.replace('tool.', ''),
-                        error: event.error || null,
-                      },
-                    ],
-                  };
-                })
-              );
-            } else if (event.type === 'content.delta') {
-              updateMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId
-                    ? { ...msg, text: msg.text + event.delta }
-                    : msg
-                )
-              );
-            } else if (event.type === 'reasoning.delta') {
-              // The model's thinking. Shown in a collapsible block, never
-              // merged into the answer text.
-              updateMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId
-                    ? { ...msg, reasoning: (msg.reasoning || '') + event.delta }
-                    : msg
-                )
-              );
-            } else if (event.type === 'turn.completed') {
-              updateMessages((prev) =>
-                prev.map((msg) => (msg.id === streamingMsgId ? { ...msg, isStreaming: false } : msg))
-              );
-              setStreamingFor(botId, false);
-            }
-          },
-          () => setStreamingFor(botId, false)
-        );
-      }
+      await sendMessage(botId, botId, userText, activeModel, finalImageUrl);
+      const started = await startTurn(botId, activeModel);
+      attachToTurn(botId, started?.turn?.turn_id || null, 0);
     } catch (err) {
       console.error('Send message error:', err);
       setStreamingFor(botId, false);

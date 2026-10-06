@@ -21,7 +21,7 @@ This is an independent open-source project and is not affiliated with xAI.
 
 - **Bot personas:** Create, edit, and switch between bots with their own role, system prompt, model, and visual identity.
 - **Model picker:** Search the live model list reported by your server, or type any model ID. Models that advertise reasoning or vision support are tagged. The default model is `x-ai/grok-4.5` on OpenRouter.
-- **SSE chat:** Send a message, persist it locally, and receive `turn.started`, `content.delta`, and `turn.completed` events over Server-Sent Events. Tokens are streamed from the model as they are generated.
+- **Server-side turns:** A reply runs as a server task, not inside the browser connection. Close the tab, reload, or open the same bot on another machine and the chat reattaches to the turn in progress and replays it. Approvals keep waiting until you answer, and the sidebar marks bots that are working or need you.
 - **Image attachments:** Upload JPEG, PNG, WEBP, GIF, or AVIF images. They are sent inline to vision-capable models as data URLs, so the image never leaves your machine except as part of the model request.
 - **Markdown messages:** Render assistant replies as Markdown in the chat transcript.
 - **Visible thinking:** Reasoning models' thinking (`reasoning_content` or `reasoning` in the stream) is shown live in a collapsible block above the reply. It is stored for display but never replayed to the model.
@@ -209,7 +209,7 @@ The server reads these variables from the environment:
 | `COMPUTER_DOCKER_WALLPAPER` | empty | Absolute host path of a JPEG or PNG used as the sandbox desktop wallpaper (compose: `COMPUTER_WALLPAPER`). Default is a generated gradient |
 | `WORKSPACE_ROOT` | repository root | Maximum directory that approved workspace tools can access |
 | `WORKSPACE_MAX_FILE_BYTES` | `131072` | Read/write size limit for workspace files |
-| `APPROVAL_TIMEOUT_SECONDS` | `120` | How long a pending approval remains open |
+| `APPROVAL_TIMEOUT_SECONDS` | `900` | How long a pending approval remains open. Turns run server-side, so this can be generous |
 | `HOST` | `127.0.0.1` | FastAPI bind address |
 | `PORT` | `8000` | FastAPI port |
 
@@ -277,7 +277,7 @@ The main code areas are:
 
 1. The client posts the user message to `/api/v1/chat/send`.
 2. The server stores it in the local message store.
-3. The client opens an EventSource connection to `/api/v1/chat/stream/{thread_id}`.
+3. The client starts a turn with `POST /api/v1/chat/turns/{thread_id}`. The server runs it as its own task, independent of any browser connection, and the client follows it over Server-Sent Events from `/api/v1/chat/stream/{thread_id}`. Events are numbered and buffered, so a reload, a second tab, or another machine attaches to the running turn and replays what it missed; `GET /api/v1/chat/turns` lists turns that are running or waiting on an approval, which drives the sidebar indicators.
 4. An explicit workspace or connector request becomes a structured action request and is checked against the deny-by-default gateway registry.
 5. The gateway pauses the stream for approval when required, then executes the registered action.
 6. The gateway emits normalized action lifecycle records; the client receives compatible tool events and the structured result.

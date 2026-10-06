@@ -237,8 +237,55 @@ export async function fetchAuditEvents(limit = 100) {
   }
 }
 
-export function subscribeToChatStream(threadId, model, onEvent, onError) {
-  const url = `${API_BASE_URL}/chat/stream/${threadId}?model=${encodeURIComponent(model)}`;
+// Turns run on the server. Start one for the latest message; a 409 means a
+// turn is already running and carries it, so callers attach instead.
+export async function startTurn(threadId, model) {
+  const res = await apiFetch(`${API_BASE_URL}/chat/turns/${encodeURIComponent(threadId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: model || null }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (res.status === 409) return { busy: true, turn: payload.turn || null };
+  if (!res.ok) throw new Error(payload.detail || 'Could not start the reply');
+  return { busy: false, turn: payload.turn };
+}
+
+export async function fetchTurnStatus(threadId) {
+  const res = await apiFetch(`${API_BASE_URL}/chat/turns/${encodeURIComponent(threadId)}`);
+  if (!res.ok) return { turn: null };
+  return res.json();
+}
+
+// Running turns and pending approvals for every bot (sidebar indicators).
+export async function fetchTurnsOverview() {
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/chat/turns`);
+    if (!res.ok) return { turns: [] };
+    return await res.json();
+  } catch (err) {
+    return { turns: [] };
+  }
+}
+
+export async function cancelTurn(threadId) {
+  const res = await apiFetch(`${API_BASE_URL}/chat/turns/${encodeURIComponent(threadId)}/cancel`, { method: 'POST' });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.detail || 'Could not cancel the reply');
+  return payload;
+}
+
+// Follow a turn's events. The server numbers them and honours Last-Event-ID,
+// so the browser's automatic reconnects resume where they left off. The
+// caller closes the subscription on terminal events (turn.completed, etc.);
+// otherwise the browser would keep reconnecting after the server ends it.
+export function subscribeToChatStream(threadId, options, onEvent, onError) {
+  const { turnId = null, after = 0 } = options || {};
+  const params = new URLSearchParams();
+  if (turnId) params.set('turn', turnId);
+  if (after) params.set('after', String(after));
+  const query = params.toString();
+  const url = `${API_BASE_URL}/chat/stream/${encodeURIComponent(threadId)}${query ? `?${query}` : ''}`;
   let eventSource = null;
   let cancelled = false;
 
@@ -257,12 +304,10 @@ export function subscribeToChatStream(threadId, model, onEvent, onError) {
       };
 
       eventSource.onerror = (err) => {
-        // Gracefully close stream when completed or disconnected
-        if (eventSource) {
-          eventSource.close();
-        }
-        if (onError && typeof onError === 'function') {
-          onError(err);
+        // CONNECTING means the browser is retrying by itself with
+        // Last-Event-ID; only a closed source is a real failure.
+        if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+          if (onError && typeof onError === 'function') onError(err);
         }
       };
     })

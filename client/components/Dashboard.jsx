@@ -16,7 +16,7 @@ import {
   createBot, 
   updateBot 
 } from '../lib/api';
-import { establishSession, setAuthFailureHandler } from '../lib/api';
+import { establishSession, setAuthFailureHandler, fetchTurnsOverview } from '../lib/api';
 import LoginScreen from './LoginScreen';
 
 export default function Dashboard() {
@@ -31,6 +31,8 @@ export default function Dashboard() {
   // one bot survives switching to another bot or another tab.
   const [messagesByBot, setMessagesByBot] = useState({});
   const [streamingBots, setStreamingBots] = useState({});
+  // The server's view of running turns and pending approvals, by bot.
+  const [turnStates, setTurnStates] = useState({});
   // Text to drop into the chat input, e.g. after handing a computer back.
   const [chatPrefill, setChatPrefill] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -51,6 +53,27 @@ export default function Dashboard() {
       .catch(() => setAuthState('login'));
     return () => setAuthFailureHandler(null);
   }, []);
+
+  // Poll the server for turns that are running or waiting on an approval.
+  // This is what lets another machine (or a reloaded page) see and attach
+  // to work in progress, and what drives the sidebar indicators.
+  useEffect(() => {
+    if (authState !== 'ready') return undefined;
+    let disposed = false;
+    const poll = async () => {
+      const overview = await fetchTurnsOverview();
+      if (disposed) return;
+      const next = {};
+      for (const turn of overview.turns || []) next[turn.thread_id] = turn;
+      setTurnStates((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    };
+    poll();
+    const interval = window.setInterval(poll, 4000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [authState]);
 
   // Initial Data Fetch
   useEffect(() => {
@@ -177,6 +200,7 @@ export default function Dashboard() {
         }}
         activeTab={activeTab}
         onSelectTab={setActiveTab}
+        turnStates={turnStates}
         onOpenSettings={() => setIsSettingsOpen(!isSettingsOpen)}
         onOpenNewBot={handleCreateNewBot}
       />
@@ -196,6 +220,7 @@ export default function Dashboard() {
             setMessagesFor={setMessagesFor}
             streamingBots={streamingBots}
             onStreamingChange={handleStreamingChange}
+            turnStates={turnStates}
             onUpdateBotModel={handleUpdateBotModel}
             onToggleComputer={() => setActiveTab('computer')}
             defaultModel={defaultModel}

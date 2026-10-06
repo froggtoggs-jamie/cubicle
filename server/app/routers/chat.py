@@ -1,10 +1,11 @@
 import json
 import uuid
-import asyncio
 from datetime import datetime
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config import settings
 from app.schemas.contracts import TurnRequest, Message
@@ -26,6 +27,7 @@ from app.services.llm_tools import (
     parse_arguments,
 )
 from app.services.openai_compatible_service import openai_compatible_service
+from app.services.turn_manager import Turn, TurnBusyError, turn_manager
 from app.services.workspace_service import (
     WorkspaceToolError,
     parse_workspace_command,
@@ -38,8 +40,8 @@ router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 MAX_TOOL_RESULT_CHARS = 20_000
 
 
-def _sse(payload: Dict[str, Any]) -> Dict[str, str]:
-    return {"event": "message", "data": json.dumps(payload)}
+class StartTurnRequest(BaseModel):
+    model: Optional[str] = None
 
 
 def _compact_result(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -114,33 +116,33 @@ async def send_message(req: TurnRequest):
 
 
 async def _perform_action(
+    turn: Turn,
     thread_id: str,
     action_call: Any,
     call_name: Optional[str] = None,
-) -> AsyncGenerator[Dict[str, Any], None]:
-    """Run one governed action through the gateway, yielding SSE events.
+) -> Dict[str, Any]:
+    """Run one governed action through the gateway, emitting events on the turn.
 
-    The last item yielded is {"_outcome": {...}} describing what happened, so
-    the caller can tell the model (or the system prompt) about it.
+    Returns an outcome dict describing what happened so the caller can tell
+    the model (or the system prompt) about it.
     """
     try:
         action_request, approval = action_gateway.open(thread_id, thread_id, action_call)
     except ActionPolicyError as exc:
-        yield _sse({
+        turn.emit({
             "type": "tool.failed",
             "tool": getattr(action_call, "name", "unknown"),
             "callName": call_name,
             "requestId": exc.request_id,
             "error": str(exc),
         })
-        yield {"_outcome": {"status": "rejected", "error": f"Action rejected by policy: {exc}", "request_id": exc.request_id}}
-        return
+        return {"status": "rejected", "error": f"Action rejected by policy: {exc}", "request_id": exc.request_id}
 
     action_name = f"{action_request.tool}.{action_request.action}"
     base = {"tool": action_name, "callName": call_name, "requestId": action_request.request_id}
 
     if approval:
-        yield _sse({
+        turn.emit({
             "type": "request.opened",
             "requestType": "permission",
             "requestId": action_request.request_id,
@@ -150,40 +152,48 @@ async def _perform_action(
             "arguments": approval["arguments"],
             "action": action_request.model_dump(),
         })
+        turn.set_pending_approval({
+            "request_id": action_request.request_id,
+            "tool": approval["tool"],
+            "call_name": call_name,
+            "summary": approval["summary"],
+            "created_at": approval.get("created_at"),
+        })
 
-    decision = await action_gateway.wait_for_decision(action_request)
+    try:
+        decision = await action_gateway.wait_for_decision(action_request)
+    finally:
+        turn.set_pending_approval(None)
+
     if decision == "deny":
-        yield _sse({"type": "tool.denied", **base})
-        yield {"_outcome": {"status": "denied", "error": f"The user denied this action: {action_request.preview}", "request": action_request}}
-        return
+        turn.emit({"type": "tool.denied", **base})
+        return {"status": "denied", "error": f"The user denied this action: {action_request.preview}", "request": action_request}
     if decision != "allow":
-        yield _sse({"type": "tool.expired", **base})
-        yield {"_outcome": {"status": "expired", "error": f"The approval request expired before the user answered: {action_request.preview}", "request": action_request}}
-        return
+        turn.emit({"type": "tool.expired", **base})
+        return {"status": "expired", "error": f"The approval request expired before the user answered: {action_request.preview}", "request": action_request}
 
-    yield _sse({"type": "tool.started", **base, "action": action_request.model_dump()})
+    turn.emit({"type": "tool.started", **base, "action": action_request.model_dump()})
     try:
         action_result = await action_gateway.execute(action_request)
     except ActionGatewayError as exc:
-        yield _sse({"type": "tool.failed", **base, "error": str(exc)})
-        yield {"_outcome": {"status": "failed", "error": f"Action could not execute ({action_name}): {exc}", "request": action_request}}
-        return
+        turn.emit({"type": "tool.failed", **base, "error": str(exc)})
+        return {"status": "failed", "error": f"Action could not execute ({action_name}): {exc}", "request": action_request}
 
     if action_result.status == "completed":
         result = action_result.result or {}
-        yield _sse({"type": "tool.completed", **base, "result": _compact_result(result)})
-        yield {"_outcome": {"status": "completed", "result": result, "request": action_request}}
-        return
+        turn.emit({"type": "tool.completed", **base, "result": _compact_result(result)})
+        return {"status": "completed", "result": result, "request": action_request}
 
     error = action_result.error or "The action failed."
-    yield _sse({"type": "tool.failed", **base, "error": error})
-    yield {"_outcome": {"status": "failed", "error": f"Action failed ({action_name}): {error}", "request": action_request}}
+    turn.emit({"type": "tool.failed", **base, "error": error})
+    return {"status": "failed", "error": f"Action failed ({action_name}): {error}", "request": action_request}
 
 
-@router.get("/stream/{thread_id}")
-async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
-    """
-    SSE stream endpoint broadcasting real-time tokens & tool events for a given thread.
+def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
+    """Capture everything a turn needs at start time and return its coroutine.
+
+    The runner is executed by the TurnManager as its own task, so it must not
+    depend on any request or connection outliving it.
     """
     history = storage_service.get_messages(thread_id=thread_id)
     bots = storage_service.get_bots()
@@ -194,7 +204,7 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
     system_prompt = f"Current Date & Time: {current_time_str}.\n\n{raw_prompt}"
     llm_config = llm_service.current_llm_config()
     selected_model = (
-        model
+        requested_model
         or (current_bot.get("model") if current_bot else None)
         or llm_config.default_model
     )
@@ -222,7 +232,7 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
     tool_definitions = openai_tool_definitions(tool_specs) if tool_specs else None
     tools_prompt = describe_tools(tool_specs)
 
-    async def event_generator():
+    async def run(turn: Turn) -> None:
         bot_msg_id = f"msg-{uuid.uuid4().hex[:6]}"
         text_pieces: List[str] = []
         # Thinking is shown to the user and kept with the message for display,
@@ -231,8 +241,7 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
         tool_records: List[Dict[str, Any]] = []
         tool_context = ""
 
-        # Emit turn started
-        yield _sse({"type": "turn.started", "botMsgId": bot_msg_id, "model": selected_model})
+        turn.emit({"type": "turn.started", "botMsgId": bot_msg_id, "model": selected_model})
 
         # --- explicit slash commands typed by the user ------------------------
         last_user_text = formatted_history[-1]["content"] if formatted_history else ""
@@ -244,23 +253,15 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
             action_call = None
             command_tool = "connector" if last_user_text.lower().startswith("/connector") else "workspace"
             tool_context = f"A {command_tool} request was rejected before execution: {exc}"
-            yield _sse({"type": "tool.failed", "tool": command_tool, "error": str(exc)})
+            turn.emit({"type": "tool.failed", "tool": command_tool, "error": str(exc)})
 
         if action_call:
-            outcome: Dict[str, Any] = {}
-            async for item in _perform_action(thread_id, action_call):
-                if "_outcome" in item:
-                    outcome = item["_outcome"]
-                else:
-                    yield item
+            outcome = await _perform_action(turn, thread_id, action_call)
             if outcome.get("status") == "completed":
                 tool_context = f"Action result ({action_call.name}): {_tool_result_text(_compact_result(outcome['result']))}"
             else:
                 tool_context = outcome.get("error") or "The action did not complete."
 
-        # Use a new name here. Assigning to `system_prompt` inside this nested
-        # generator would make it local to the whole function and raise
-        # UnboundLocalError on the first read above.
         turn_system_prompt = system_prompt
         if tools_prompt:
             turn_system_prompt = f"{turn_system_prompt}\n\n{tools_prompt}"
@@ -274,138 +275,130 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
         # Once the tool budget is spent the model gets one last call without
         # tools so the user always receives an answer rather than a cut-off.
         final_answer_only = False
-        try:
-            while True:
-                rounds += 1
-                round_text = ""
-                pending_calls: List[Dict[str, Any]] = []
-                round_ok = True
+        while True:
+            rounds += 1
+            round_text = ""
+            pending_calls: List[Dict[str, Any]] = []
+            round_ok = True
 
-                round_prompt = turn_system_prompt
-                round_tools = tool_definitions
-                if final_answer_only:
-                    round_tools = None
-                    round_prompt = (
-                        f"{turn_system_prompt}\n\nThe tool budget for this turn is used up. "
-                        "Do not call tools. Reply to the user now with what you found, and say what is still unverified."
-                    )
+            round_prompt = turn_system_prompt
+            round_tools = tool_definitions
+            if final_answer_only:
+                round_tools = None
+                round_prompt = (
+                    f"{turn_system_prompt}\n\nThe tool budget for this turn is used up. "
+                    "Do not call tools. Reply to the user now with what you found, and say what is still unverified."
+                )
 
-                async for event in llm_service.stream_chat_completion(
-                    model=selected_model,
-                    messages=messages,
-                    system_prompt=round_prompt,
-                    config=llm_config,
-                    tools=round_tools,
-                ):
-                    if event["type"] == "content.delta":
-                        round_text += event["delta"]
-                        yield _sse({"type": "content.delta", "botMsgId": bot_msg_id, "delta": event["delta"]})
-                    elif event["type"] == "reasoning.delta":
-                        accumulated_reasoning += event["delta"]
-                        yield _sse({"type": "reasoning.delta", "botMsgId": bot_msg_id, "delta": event["delta"]})
-                    elif event["type"] == "tool_calls":
-                        pending_calls = list(event.get("calls") or [])
-                    elif event["type"] == "turn.completed":
-                        round_ok = bool(event.get("ok", True))
+            async for event in llm_service.stream_chat_completion(
+                model=selected_model,
+                messages=messages,
+                system_prompt=round_prompt,
+                config=llm_config,
+                tools=round_tools,
+            ):
+                if event["type"] == "content.delta":
+                    round_text += event["delta"]
+                    turn.emit({"type": "content.delta", "botMsgId": bot_msg_id, "delta": event["delta"]})
+                elif event["type"] == "reasoning.delta":
+                    accumulated_reasoning += event["delta"]
+                    turn.emit({"type": "reasoning.delta", "botMsgId": bot_msg_id, "delta": event["delta"]})
+                elif event["type"] == "tool_calls":
+                    pending_calls = list(event.get("calls") or [])
+                elif event["type"] == "turn.completed":
+                    round_ok = bool(event.get("ok", True))
 
-                if round_text.strip():
-                    text_pieces.append(round_text)
+            if round_text.strip():
+                text_pieces.append(round_text)
 
-                if final_answer_only:
-                    if not round_text.strip():
-                        note = f"[Stopped after {max_rounds} tool rounds without a final answer.]"
-                        text_pieces.append(note)
-                        yield _sse({"type": "content.delta", "botMsgId": bot_msg_id, "delta": note})
-                    break
-                if not pending_calls or not round_ok:
-                    break
-                if round_text.strip():
-                    # Visually separate a "let me check" preamble from the answer.
-                    yield _sse({"type": "content.delta", "botMsgId": bot_msg_id, "delta": "\n\n"})
+            if final_answer_only:
+                if not round_text.strip():
+                    note = f"[Stopped after {max_rounds} tool rounds without a final answer.]"
+                    text_pieces.append(note)
+                    turn.emit({"type": "content.delta", "botMsgId": bot_msg_id, "delta": note})
+                break
+            if not pending_calls or not round_ok:
+                break
+            if round_text.strip():
+                # Visually separate a "let me check" preamble from the answer.
+                turn.emit({"type": "content.delta", "botMsgId": bot_msg_id, "delta": "\n\n"})
 
-                messages.append({
-                    "role": "assistant",
-                    "content": round_text,
-                    "tool_calls": [
-                        {"id": call["id"], "name": call["name"], "arguments": call.get("arguments") or "{}"}
-                        for call in pending_calls
-                    ],
-                })
+            messages.append({
+                "role": "assistant",
+                "content": round_text,
+                "tool_calls": [
+                    {"id": call["id"], "name": call["name"], "arguments": call.get("arguments") or "{}"}
+                    for call in pending_calls
+                ],
+            })
 
-                if rounds >= max_rounds:
-                    # Budget spent: answer the pending calls without running
-                    # them, then ask for a text-only reply.
-                    for call in pending_calls:
-                        tool_records.append({"id": call["id"], "name": call["name"], "status": "skipped",
-                                             "error": "Tool budget for this turn was used up."})
-                        yield _sse({"type": "tool.failed", "tool": call["name"], "callName": call["name"],
-                                    "error": "Not run: the tool budget for this turn was used up."})
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call["id"],
-                            "content": _tool_result_text({"status": "skipped", "error": "Tool budget used up; answer the user now."}),
-                        })
-                    final_answer_only = True
+            if rounds >= max_rounds:
+                # Budget spent: answer the pending calls without running
+                # them, then ask for a text-only reply.
+                for call in pending_calls:
+                    tool_records.append({"id": call["id"], "name": call["name"], "status": "skipped",
+                                         "error": "Tool budget for this turn was used up."})
+                    turn.emit({"type": "tool.failed", "tool": call["name"], "callName": call["name"],
+                               "error": "Not run: the tool budget for this turn was used up."})
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": _tool_result_text({"status": "skipped", "error": "Tool budget used up; answer the user now."}),
+                    })
+                final_answer_only = True
+                continue
+
+            image_messages: List[Dict[str, Any]] = []
+            for call in pending_calls:
+                call_id = call["id"]
+                call_name = call["name"]
+                record: Dict[str, Any] = {"id": call_id, "name": call_name, "status": "running"}
+                tool_records.append(record)
+
+                try:
+                    arguments = parse_arguments(call.get("arguments"))
+                    invocation = build_invocation(call_name, arguments, thread_id)
+                except ToolCallError as exc:
+                    record.update({"status": "failed", "error": str(exc)})
+                    turn.emit({"type": "tool.failed", "tool": call_name, "callName": call_name, "error": str(exc)})
+                    messages.append({"role": "tool", "tool_call_id": call_id, "content": _tool_result_text({"error": str(exc)})})
                     continue
 
-                image_messages: List[Dict[str, Any]] = []
-                for call in pending_calls:
-                    call_id = call["id"]
-                    call_name = call["name"]
-                    record: Dict[str, Any] = {"id": call_id, "name": call_name, "status": "running"}
-                    tool_records.append(record)
+                record["summary"] = getattr(invocation, "summary", None) or getattr(invocation, "preview", call_name)
+                outcome = await _perform_action(turn, thread_id, invocation, call_name=call_name)
 
-                    try:
-                        arguments = parse_arguments(call.get("arguments"))
-                        invocation = build_invocation(call_name, arguments, thread_id)
-                    except ToolCallError as exc:
-                        record.update({"status": "failed", "error": str(exc)})
-                        yield _sse({"type": "tool.failed", "tool": call_name, "callName": call_name, "error": str(exc)})
-                        messages.append({"role": "tool", "tool_call_id": call_id, "content": _tool_result_text({"error": str(exc)})})
-                        continue
-
-                    record["summary"] = getattr(invocation, "summary", None) or getattr(invocation, "preview", call_name)
-                    outcome = {}
-                    async for item in _perform_action(thread_id, invocation, call_name=call_name):
-                        if "_outcome" in item:
-                            outcome = item["_outcome"]
-                        else:
-                            yield item
-
-                    status = outcome.get("status", "failed")
-                    record["status"] = status
-                    request_obj = outcome.get("request")
-                    if request_obj is not None:
-                        record["requestId"] = request_obj.request_id
-                        record["arguments"] = request_obj.arguments
-                    if status == "completed":
-                        result = outcome.get("result") or {}
-                        payload = _compact_result(result)
-                        if call_name == "computer_request_takeover":
-                            yield _sse({
-                                "type": "computer.takeover_requested",
-                                "botMsgId": bot_msg_id,
-                                "botId": thread_id,
-                                "reason": str(arguments.get("reason") or ""),
-                            })
-                        screenshot = _screenshot_message(result)
-                        if screenshot is not None:
-                            if _model_accepts_images(selected_model, llm_config):
-                                image_messages.append(screenshot)
-                                payload["image"] = "attached as the next message"
-                            else:
-                                payload["image"] = "omitted: the selected model does not accept images"
-                        messages.append({"role": "tool", "tool_call_id": call_id, "content": _tool_result_text(payload)})
-                    else:
-                        record["error"] = outcome.get("error")
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": call_id,
-                            "content": _tool_result_text({"status": status, "error": outcome.get("error")}),
+                status = outcome.get("status", "failed")
+                record["status"] = status
+                request_obj = outcome.get("request")
+                if request_obj is not None:
+                    record["requestId"] = request_obj.request_id
+                    record["arguments"] = request_obj.arguments
+                if status == "completed":
+                    result = outcome.get("result") or {}
+                    payload = _compact_result(result)
+                    if call_name == "computer_request_takeover":
+                        turn.emit({
+                            "type": "computer.takeover_requested",
+                            "botMsgId": bot_msg_id,
+                            "botId": thread_id,
+                            "reason": str(arguments.get("reason") or ""),
                         })
-                messages.extend(image_messages)
-        except asyncio.CancelledError:
-            raise
+                    screenshot = _screenshot_message(result)
+                    if screenshot is not None:
+                        if _model_accepts_images(selected_model, llm_config):
+                            image_messages.append(screenshot)
+                            payload["image"] = "attached as the next message"
+                        else:
+                            payload["image"] = "omitted: the selected model does not accept images"
+                    messages.append({"role": "tool", "tool_call_id": call_id, "content": _tool_result_text(payload)})
+                else:
+                    record["error"] = outcome.get("error")
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": _tool_result_text({"status": status, "error": outcome.get("error")}),
+                    })
+            messages.extend(image_messages)
 
         raw_payload: Dict[str, Any] = {}
         if accumulated_reasoning:
@@ -425,6 +418,81 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
             "raw_payload": raw_payload or None,
         }
         storage_service.add_message(bot_msg)
-        yield _sse({"type": "turn.completed", "ok": True, "botMsgId": bot_msg_id})
+        turn.emit({"type": "turn.completed", "ok": True, "botMsgId": bot_msg_id})
 
-    return EventSourceResponse(event_generator())
+    return run, selected_model
+
+
+def _bot_id_for(thread_id: str) -> str:
+    bots = storage_service.get_bots()
+    bot = next((b for b in bots if b["id"] == thread_id), None)
+    return bot["id"] if bot else thread_id
+
+
+# ---- turns ------------------------------------------------------------------
+
+
+@router.get("/turns")
+async def list_turns():
+    """Running turns and pending approvals across all bots (sidebar badges)."""
+    return {"turns": turn_manager.overview()}
+
+
+@router.get("/turns/{thread_id}")
+async def turn_status(thread_id: str):
+    turn = turn_manager.current(thread_id)
+    return {"turn": turn.to_dict() if turn else None}
+
+
+@router.post("/turns/{thread_id}")
+async def start_turn(thread_id: str, body: Optional[StartTurnRequest] = None):
+    """Start the bot's reply to the latest message as a server-owned task.
+
+    Returns 409 with the running turn when one is already in progress, so a
+    second tab or machine attaches to it instead of starting a competing one.
+    """
+    runner, selected_model = _build_turn_runner(thread_id, body.model if body else None)
+    try:
+        turn = turn_manager.start(thread_id, _bot_id_for(thread_id), selected_model, runner)
+    except TurnBusyError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc), "turn": exc.turn.to_dict()})
+    return {"turn": turn.to_dict()}
+
+
+@router.post("/turns/{thread_id}/cancel")
+async def cancel_turn(thread_id: str):
+    turn = turn_manager.cancel(thread_id)
+    if turn is None:
+        raise HTTPException(status_code=404, detail="No running turn for this thread")
+    return {"turn": turn.to_dict()}
+
+
+@router.get("/stream/{thread_id}")
+async def stream_turn(
+    thread_id: str,
+    request: Request,
+    turn: Optional[str] = Query(None),
+    after: int = Query(0),
+):
+    """Follow a turn's events over Server-Sent Events.
+
+    Replays buffered events with seq > `after` (or the browser's Last-Event-ID
+    on an automatic reconnect), then streams live until the turn finishes.
+    Never starts a turn; a reconnecting client must not trigger a new reply.
+    """
+    record = turn_manager.get(turn) if turn else turn_manager.current(thread_id)
+    last_event_id = request.headers.get("last-event-id") if request is not None and request.headers else None
+    if last_event_id and str(last_event_id).isdigit():
+        after = max(after, int(last_event_id))
+
+    if record is None or record.thread_id != thread_id:
+        async def nothing():
+            yield {"event": "message", "data": json.dumps({"type": "turn.none"})}
+
+        return EventSourceResponse(nothing())
+
+    async def events():
+        async for event in record.subscribe(after):
+            yield {"event": "message", "id": str(event["seq"]), "data": json.dumps(event)}
+
+    return EventSourceResponse(events())

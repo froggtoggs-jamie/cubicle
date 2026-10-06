@@ -3,9 +3,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from app.routers import chat as chat_router
+from app.services.turn_manager import TurnManager
 from app.services.action_gateway import ActionGateway
 from app.services.llm_config import LLMConfig
 from app.services.storage_service import StorageService
@@ -86,6 +88,19 @@ async def _collect_sse(response):
     return events
 
 
+def _fake_request(last_event_id=None):
+    headers = {"last-event-id": str(last_event_id)} if last_event_id is not None else {}
+    return SimpleNamespace(headers=headers)
+
+
+async def _start_and_stream(thread_id, model=None, after=0):
+    """Start a server-side turn, then follow it to the end like the browser does."""
+    started = await chat_router.start_turn(thread_id, chat_router.StartTurnRequest(model=model))
+    response = await chat_router.stream_turn(thread_id, _fake_request(), turn=None, after=after)
+    events = await _collect_sse(response)
+    return started, events
+
+
 class ChatStreamRouteTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -105,21 +120,25 @@ class ChatStreamRouteTests(unittest.TestCase):
             # Windows keeps the SQLite file open briefly after the last connection.
             pass
 
-    def _run_turn(self, thread_id, model=None, stream=None, gateway=None, config=None):
-        recorder = {}
+    def _patches(self, recorder, stream=None, gateway=None, config=None, manager=None):
         patches = [
             mock.patch.object(chat_router, "storage_service", self.storage),
             mock.patch.object(chat_router.llm_service, "current_llm_config", return_value=config or self.config),
             mock.patch.object(chat_router.llm_service, "stream_chat_completion", stream or _fake_stream(recorder)),
             mock.patch.object(chat_router, "composio_service", NoComposio()),
+            mock.patch.object(chat_router, "turn_manager", manager or TurnManager()),
         ]
         if gateway is not None:
             patches.append(mock.patch.object(chat_router, "action_gateway", gateway))
+        return patches
+
+    def _run_turn(self, thread_id, model=None, stream=None, gateway=None, config=None):
+        recorder = {}
+        patches = self._patches(recorder, stream=stream, gateway=gateway, config=config)
         for p in patches:
             p.start()
         try:
-            response = asyncio.run(chat_router.stream_turn(thread_id, model=model))
-            events = asyncio.run(_collect_sse(response))
+            _, events = asyncio.run(_start_and_stream(thread_id, model=model))
         finally:
             for p in reversed(patches):
                 p.stop()
@@ -333,6 +352,119 @@ class ChatStreamRouteTests(unittest.TestCase):
         recorder, _ = self._run_turn(bot["id"], config=muapi)
         self.assertIsNone(recorder["tools"])
         self.assertNotIn("## Tools", recorder["system_prompt"])
+
+    def test_turn_runs_without_a_subscriber_and_can_be_replayed_by_a_late_one(self):
+        bot = self.storage.get_bots()[0]
+        self.storage.add_message(
+            {"id": "m1", "thread_id": bot["id"], "bot_id": bot["id"], "sender": "user", "text": "hi"}
+        )
+        recorder = {}
+        manager = TurnManager()
+        patches = self._patches(recorder, manager=manager)
+        for p in patches:
+            p.start()
+        try:
+            async def scenario():
+                started = await chat_router.start_turn(bot["id"], chat_router.StartTurnRequest())
+                turn_id = started["turn"]["turn_id"]
+                # Nobody is listening; the turn still runs to completion.
+                await asyncio.wait_for(manager.get(turn_id).task, 2)
+                status = await chat_router.turn_status(bot["id"])
+                self.assertEqual(status["turn"]["status"], "completed")
+                # A browser arriving afterwards (reload, other machine) replays everything.
+                response = await chat_router.stream_turn(bot["id"], _fake_request(), turn=None, after=0)
+                events = await _collect_sse(response)
+                self.assertEqual(events[0]["type"], "turn.started")
+                self.assertEqual(events[-1]["type"], "turn.completed")
+                self.assertEqual("".join(e.get("delta", "") for e in events if e["type"] == "content.delta"), "Hello there")
+                # Resuming from Last-Event-ID skips what was already seen.
+                response = await chat_router.stream_turn(bot["id"], _fake_request(last_event_id=events[-2]["seq"]), turn=None, after=0)
+                tail = await _collect_sse(response)
+                self.assertEqual([e["type"] for e in tail], ["turn.completed"])
+                # Starting again while one is running is refused with the running turn.
+                gate = asyncio.Event()
+
+                async def slow_stream(model, messages, system_prompt="", config=None, tools=None):
+                    await gate.wait()
+                    yield {"type": "content.delta", "delta": "late"}
+                    yield {"type": "turn.completed", "ok": True}
+
+                with mock.patch.object(chat_router.llm_service, "stream_chat_completion", slow_stream):
+                    first = await chat_router.start_turn(bot["id"], chat_router.StartTurnRequest())
+                    await asyncio.sleep(0.01)
+                    second = await chat_router.start_turn(bot["id"], chat_router.StartTurnRequest())
+                    self.assertEqual(second.status_code, 409)
+                    self.assertEqual(json.loads(second.body)["turn"]["turn_id"], first["turn"]["turn_id"])
+                    self.assertEqual((await chat_router.list_turns())["turns"][0]["turn_id"], first["turn"]["turn_id"])
+                    gate.set()
+                    await asyncio.wait_for(manager.get(first["turn"]["turn_id"]).task, 2)
+
+            asyncio.run(scenario())
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+        saved = self.storage.get_messages(bot["id"])
+        # The seeded bot starts with a greeting; both turns were persisted after it.
+        self.assertEqual([m["text"] for m in saved if m["sender"] == "bot"][-2:], ["Hello there", "late"])
+
+    def test_streaming_an_unknown_thread_reports_no_turn(self):
+        with mock.patch.object(chat_router, "turn_manager", TurnManager()):
+            response = asyncio.run(chat_router.stream_turn("nope", _fake_request(), turn=None, after=0))
+            events = asyncio.run(_collect_sse(response))
+        self.assertEqual(events, [{"type": "turn.none"}])
+
+    def test_pending_approval_is_visible_in_turn_status(self):
+        bot = self.storage.get_bots()[0]
+        self.storage.add_message(
+            {"id": "m1", "thread_id": bot["id"], "bot_id": bot["id"], "sender": "user", "text": "write"}
+        )
+
+        class HoldingBroker(DecidingApprovalBroker):
+            def __init__(self):
+                super().__init__("allow")
+                self.release = asyncio.Event()
+
+            async def wait(self, request_id):
+                await self.release.wait()
+                return "allow"
+
+        workspace_root = Path(self.temp_dir.name) / "workspace"
+        workspace_root.mkdir(exist_ok=True)
+        broker = HoldingBroker()
+        gateway = ActionGateway(workspace=WorkspaceService(workspace_root), approvals=broker, audit=self.storage)
+        recorder = {}
+        stream = _scripted_stream(
+            recorder,
+            [
+                [{"type": "tool_calls", "calls": [{"id": "c1", "name": "workspace_write", "arguments": "{\"path\": \"a.txt\", \"content\": \"x\"}"}]},
+                 {"type": "turn.completed", "ok": True}],
+                [{"type": "content.delta", "delta": "Written."}, {"type": "turn.completed", "ok": True}],
+            ],
+        )
+        manager = TurnManager()
+        patches = self._patches(recorder, stream=stream, gateway=gateway, manager=manager)
+        for p in patches:
+            p.start()
+        try:
+            async def scenario():
+                started = await chat_router.start_turn(bot["id"], chat_router.StartTurnRequest())
+                await asyncio.sleep(0.05)
+                status = (await chat_router.turn_status(bot["id"]))["turn"]
+                self.assertEqual(status["status"], "running")
+                self.assertEqual(status["pending_approval"]["call_name"], "workspace_write")
+                self.assertIn("a.txt", status["pending_approval"]["summary"])
+                overview = (await chat_router.list_turns())["turns"]
+                self.assertEqual(overview[0]["pending_approval"]["request_id"], status["pending_approval"]["request_id"])
+                broker.release.set()
+                await asyncio.wait_for(manager.get(started["turn"]["turn_id"]).task, 2)
+                self.assertIsNone((await chat_router.turn_status(bot["id"]))["turn"]["pending_approval"])
+
+            asyncio.run(scenario())
+        finally:
+            for p in reversed(patches):
+                p.stop()
+        self.assertTrue((workspace_root / "a.txt").exists())
 
     def test_rejected_tool_command_is_reported_and_added_to_the_prompt(self):
         bot = self.storage.get_bots()[0]

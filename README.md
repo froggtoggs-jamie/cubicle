@@ -131,7 +131,9 @@ docker compose up --build -d
 
 Open the `SITE_ADDRESS` you configured and sign in with the token. Caddy routes `/api/*` to the FastAPI container and everything else to the Next.js container, with SSE buffering disabled so chat streams normally.
 
-**HTTPS on a LAN.** With an `https://` address Caddy issues a certificate from its own internal certificate authority for that hostname or IP, so browsers will warn until they trust the root certificate. Export it once and install it on each client machine:
+Caddy serves the site only for requests whose hostname or IP matches `SITE_ADDRESS` (the port may differ). Opening the server by another name, for example `http://localhost` on the host itself when `SITE_ADDRESS` is the LAN IP, returns a short message saying which address to use rather than the app.
+
+**HTTPS on a LAN.** With an `https://` address Caddy issues a certificate from its own internal certificate authority for that hostname or IP, so browsers will warn until they trust the root certificate. An IP address works too: browsers send no SNI for bare IPs, and the compose file derives Caddy's `default_sni` from `SITE_ADDRESS` so the handshake still succeeds. Export the root certificate once and install it on each client machine:
 
 ```bash
 docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./open-grok-bot-ca.crt

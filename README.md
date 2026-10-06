@@ -19,7 +19,7 @@ This is an independent open-source project and is not affiliated with xAI.
 
 ## What it does
 
-- **Bot personas:** Create, edit, and switch between bots with their own role, system prompt, model, and visual identity.
+- **Bot personas:** Create and edit bots in a dialog with their own avatar, accent colour, role, description, model, and system prompt. Archive a bot to hide it while keeping its history, or delete it to remove the conversation and its computer too.
 - **Model picker:** Search the live model list reported by your server, or type any model ID. Models that advertise reasoning or vision support are tagged. The default model is `x-ai/grok-4.5` on OpenRouter.
 - **Server-side turns:** A reply runs as a server task, not inside the browser connection. Close the tab, reload, or open the same bot on another machine and the chat reattaches to the turn in progress and replays it. Approvals keep waiting until you answer, and the sidebar marks bots that are working or need you.
 - **Image attachments:** Upload JPEG, PNG, WEBP, GIF, or AVIF images. They are sent inline to vision-capable models as data URLs, so the image never leaves your machine except as part of the model request.
@@ -342,7 +342,7 @@ All routes are prefixed with `/api/v1`.
 | POST | `/auth/login` | Exchange a configured bearer token for an HttpOnly session |
 | POST | `/auth/logout` | Clear the current browser session |
 | GET, POST | `/bots` | List or create bot personas |
-| PUT, DELETE | `/bots/{bot_id}` | Update or delete a bot |
+| PUT, DELETE | `/bots/{bot_id}` | Update a bot (including `archived`), or delete it with its messages, running turn, and computer |
 | GET | `/models` | Return the configured model catalog |
 | GET | `/chat/history/{thread_id}` | Read a bot's message history |
 | POST | `/chat/send` | Store a user message |

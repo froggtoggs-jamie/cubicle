@@ -5,7 +5,7 @@ import MessageItem from './MessageItem';
 import ApprovalCard from './ApprovalCard';
 import ModelPicker from './ModelPicker';
 import MascotAvatar from './MascotAvatar';
-import { FiPlus, FiMic, FiMicOff, FiMonitor, FiX, FiImage } from 'react-icons/fi';
+import { FiPlus, FiMic, FiMicOff, FiMonitor, FiX, FiImage, FiEdit2 } from 'react-icons/fi';
 import {
   sendMessage,
   subscribeToChatStream,
@@ -37,7 +37,7 @@ function formatHeaderDate(msgs) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessagesFor, streamingBots, onStreamingChange, turnStates, onUpdateBotModel, onToggleComputer, defaultModel, prefill }) {
+export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessagesFor, streamingBots, onStreamingChange, turnStates, onUpdateBotModel, onEditBot, onToggleComputer, defaultModel, prefill }) {
   const [inputPrompt, setInputPrompt] = useState('');
   // Streaming is tracked per bot by the Dashboard so a reply keeps going
   // while another bot or tab is shown.
@@ -360,9 +360,25 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
       {/* Top Header Bar */}
       <header className="px-6 py-3.5 flex items-center justify-between z-20 bg-[#09090b]/80 backdrop-blur-md border-b border-[#18181c]">
         {/* Left Side: Bot Indicator */}
-        <div className="flex items-center gap-2.5">
-          <MascotAvatar type={bot?.isError ? 'warning' : 'blue'} size="sm" />
-          <h2 className="font-bold text-sm text-zinc-100 tracking-wide">{botTitle}</h2>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-base border flex-shrink-0"
+            style={{ background: `${bot?.accent_color || '#3b82f6'}22`, borderColor: `${bot?.accent_color || '#3b82f6'}55` }}
+            aria-hidden="true"
+          >
+            {bot?.avatar || '🤖'}
+          </div>
+          <h2 className="font-bold text-sm text-zinc-100 tracking-wide truncate">{botTitle}</h2>
+          {bot && onEditBot && (
+            <button
+              type="button"
+              onClick={onEditBot}
+              className="p-1 rounded-md text-zinc-500 hover:text-white hover:bg-[#1f1f23] transition"
+              title="Edit this bot"
+            >
+              <FiEdit2 className="text-xs" />
+            </button>
+          )}
         </div>
 
 

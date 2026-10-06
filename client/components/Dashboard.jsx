@@ -7,14 +7,16 @@ import ComputerPanel from './ComputerPanel';
 import Marketplace from './Marketplace';
 import AuditPanel from './AuditPanel';
 import AppSettingsDrawer from './AppSettingsDrawer';
+import BotEditorModal, { ConfirmDialog } from './BotEditorModal';
 
-import { 
-  fetchBots, 
-  fetchModels, 
-  fetchChatHistory, 
+import {
+  fetchBots,
+  fetchModels,
+  fetchChatHistory,
   fetchSettings,
-  createBot, 
-  updateBot 
+  createBot,
+  updateBot,
+  deleteBot,
 } from '../lib/api';
 import { establishSession, setAuthFailureHandler, fetchTurnsOverview } from '../lib/api';
 import LoginScreen from './LoginScreen';
@@ -36,6 +38,9 @@ export default function Dashboard() {
   // Text to drop into the chat input, e.g. after handing a computer back.
   const [chatPrefill, setChatPrefill] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // Bot editor: null, { mode: 'create' } or { mode: 'edit', bot }.
+  const [botEditor, setBotEditor] = useState(null);
+  const [botToDelete, setBotToDelete] = useState(null);
   const [defaultModel, setDefaultModel] = useState('');
   const [userName, setUserName] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -87,8 +92,9 @@ export default function Dashboard() {
         if (settingsData?.default_model) {
           setDefaultModel(settingsData.default_model);
         }
-        if (botsData.length > 0) {
-          setActiveBotId(botsData[0].id);
+        const firstVisible = botsData.find((b) => !b.archived) || botsData[0];
+        if (firstVisible) {
+          setActiveBotId(firstVisible.id);
         }
       } catch (err) {
         console.error('Initialization error:', err);
@@ -151,28 +157,53 @@ export default function Dashboard() {
     }
   };
 
-  const handleCreateNewBot = async () => {
-    const name = prompt('Enter Bot Name:', 'New Assistant');
-    if (!name) return;
-    const role = prompt('Enter Role:', 'General Intelligence');
-    const model = prompt('Enter model ID (change it later from the chat header):', defaultModel || '');
-    const chosenModel = (model || defaultModel || '').trim();
+  // When the active bot disappears from the list, move to the next visible one.
+  const selectNextVisible = (list, removedId) => {
+    if (activeBotId !== removedId) return;
+    const next = list.find((b) => !b.archived && b.id !== removedId);
+    setActiveBotId(next ? next.id : '');
+    setActiveTab('chat');
+  };
 
-    try {
-      const newBot = await createBot({
-        name,
-        role: role || 'AI Assistant',
-        ...(chosenModel ? { model: chosenModel } : {}),
-        description: `Custom agent running ${chosenModel || 'the default model'}.`,
-        avatar: '🤖',
-        system_prompt: `You are ${name}, a helpful AI assistant.`
-      });
-      setBots((prev) => [...prev, newBot]);
-      setActiveBotId(newBot.id);
+  const handleSaveBot = async (values) => {
+    if (botEditor?.mode === 'edit' && botEditor.bot) {
+      const updated = await updateBot(botEditor.bot.id, values);
+      setBots((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+      if (updated.id === activeBotId && values.model) setDefaultModel(values.model);
+    } else {
+      const created = await createBot(values);
+      setBots((prev) => [...prev, created]);
+      setActiveBotId(created.id);
       setActiveTab('chat');
-    } catch (err) {
-      console.error('Failed to create bot:', err);
     }
+    setBotEditor(null);
+  };
+
+  const handleArchiveBot = async (bot, archived) => {
+    const updated = await updateBot(bot.id, { archived });
+    setBots((prev) => {
+      const list = prev.map((b) => (b.id === updated.id ? updated : b));
+      if (archived) selectNextVisible(list, bot.id);
+      return list;
+    });
+    if (!archived) setActiveBotId(bot.id);
+    setBotEditor(null);
+  };
+
+  const handleDeleteBot = async (bot) => {
+    await deleteBot(bot.id);
+    setBots((prev) => {
+      const list = prev.filter((b) => b.id !== bot.id);
+      selectNextVisible(list, bot.id);
+      return list;
+    });
+    setMessagesByBot((prev) => {
+      const next = { ...prev };
+      delete next[bot.id];
+      return next;
+    });
+    setBotToDelete(null);
+    setBotEditor(null);
   };
 
   if (authState === 'login') {
@@ -202,7 +233,10 @@ export default function Dashboard() {
         onSelectTab={setActiveTab}
         turnStates={turnStates}
         onOpenSettings={() => setIsSettingsOpen(!isSettingsOpen)}
-        onOpenNewBot={handleCreateNewBot}
+        onOpenNewBot={() => setBotEditor({ mode: 'create' })}
+        onEditBot={(bot) => setBotEditor({ mode: 'edit', bot })}
+        onArchiveBot={(bot, archived) => handleArchiveBot(bot, archived).catch((err) => console.error('Archive failed:', err))}
+        onDeleteBot={(bot) => setBotToDelete(bot)}
       />
 
       {/* Main Workspace Display Area */}
@@ -222,6 +256,7 @@ export default function Dashboard() {
             onStreamingChange={handleStreamingChange}
             turnStates={turnStates}
             onUpdateBotModel={handleUpdateBotModel}
+            onEditBot={() => activeBot && setBotEditor({ mode: 'edit', bot: activeBot })}
             onToggleComputer={() => setActiveTab('computer')}
             defaultModel={defaultModel}
             prefill={chatPrefill}
@@ -248,6 +283,29 @@ export default function Dashboard() {
 
         {activeTab === 'audit' && <AuditPanel />}
       </main>
+
+      {botEditor && (
+        <BotEditorModal
+          bot={botEditor.mode === 'edit' ? bots.find((b) => b.id === botEditor.bot.id) || botEditor.bot : null}
+          models={models}
+          catalogError={catalogError}
+          onRefreshModels={refreshModels}
+          defaultModel={defaultModel}
+          onClose={() => setBotEditor(null)}
+          onSave={handleSaveBot}
+          onArchive={handleArchiveBot}
+          onDelete={handleDeleteBot}
+        />
+      )}
+
+      {botToDelete && (
+        <ConfirmDialog
+          title={`Delete ${botToDelete.name}?`}
+          body="The bot, its whole conversation, and its computer are removed. This cannot be undone. Archiving keeps everything and just hides the bot."
+          onCancel={() => setBotToDelete(null)}
+          onConfirm={() => handleDeleteBot(botToDelete).catch((err) => console.error('Delete failed:', err))}
+        />
+      )}
 
       {/* Right Side App Settings Drawer Panel */}
       <AppSettingsDrawer

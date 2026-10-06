@@ -14,6 +14,8 @@ class Bot(BaseModel):
     system_prompt: str
     tools: List[str] = []
     pinned: bool = False
+    archived: bool = False
+    archived_at: Optional[str] = None
     unread_count: int = 0
     created_at: str
 

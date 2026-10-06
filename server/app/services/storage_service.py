@@ -337,6 +337,15 @@ class StorageService:
                 (message_id, thread_id, self.owner_id, json.dumps(message)),
             )
 
+    def delete_messages(self, thread_id: str) -> int:
+        """Remove every message in a thread; returns how many were deleted."""
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM messages WHERE owner_id = ? AND thread_id = ?",
+                (self.owner_id, thread_id),
+            )
+            return cursor.rowcount if cursor.rowcount is not None else 0
+
     def save_messages(self, messages: List[Dict[str, Any]]):
         with self.database.connect() as connection:
             connection.execute("DELETE FROM messages WHERE owner_id = ?", (self.owner_id,))

@@ -13,7 +13,7 @@ mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME" "$HOME/.config"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 # The home directory is an empty tmpfs on every start; seed the desktop
-# configuration (panel layout, dock launchers) from the image.
+# configuration (panel layout, dock launchers, GTK theme) from the image.
 cp -R /opt/open-grok-computer/skel/. "$HOME/"
 
 # X server with VNC built in. Loopback only; the driver bridges it over the
@@ -36,7 +36,11 @@ done
 eval "$(dbus-launch --sh-syntax)"
 export DBUS_SESSION_BUS_ADDRESS
 
+# Wallpaper: the generated default, or a file mounted over it by the host
+# (COMPUTER_DOCKER_WALLPAPER). Fall back to a flat colour if it cannot load.
 xsetroot -solid '#15171c'
+feh --no-fehbg --bg-fill /opt/open-grok-computer/wallpaper >/tmp/feh.log 2>&1 || true
+
 xfwm4 --compositor=off >/tmp/xfwm4.log 2>&1 &
 xfce4-panel --disable-wm-check >/tmp/panel.log 2>&1 &
 

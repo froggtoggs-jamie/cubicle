@@ -75,6 +75,10 @@ class Settings:
     # COMPUTER_DOCKER_WORKSPACE_ROOT, because the daemon resolves mount sources
     # on the host.
     COMPUTER_DOCKER_HOST_WORKSPACE_ROOT: str = os.getenv("COMPUTER_DOCKER_HOST_WORKSPACE_ROOT", "").strip()
+    # Optional host path of an image file to use as the sandbox desktop
+    # wallpaper. Resolved by the Docker daemon, so it is a host path even when
+    # the API runs in a container.
+    COMPUTER_DOCKER_WALLPAPER: str = os.getenv("COMPUTER_DOCKER_WALLPAPER", "").strip()
     COMPUTER_DOCKER_SECCOMP_PROFILE: Path = Path(
         os.getenv(
             "COMPUTER_DOCKER_SECCOMP_PROFILE",

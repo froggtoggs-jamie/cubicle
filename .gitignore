@@ -36,3 +36,6 @@ server/app/services/__pycache__/
 Thumbs.db
 .vscode/
 .idea/
+
+# Per-deployment sandbox wallpaper (see COMPUTER_WALLPAPER)
+/wallpaper.*

@@ -206,6 +206,7 @@ The server reads these variables from the environment:
 | `COMPUTER_DOCKER_NETWORK` | empty | When set, runtime containers join this Docker network and are reached by name instead of a port published on loopback. Used by the compose stack |
 | `COMPUTER_DOCKER_WORKSPACE_MODE` | `bind` | `bind` mounts a host directory per computer; `volume` uses a named Docker volume per computer |
 | `COMPUTER_DOCKER_HOST_WORKSPACE_ROOT` | empty | In `bind` mode from inside a container: the host path equivalent of `COMPUTER_DOCKER_WORKSPACE_ROOT` |
+| `COMPUTER_DOCKER_WALLPAPER` | empty | Absolute host path of a JPEG or PNG used as the sandbox desktop wallpaper (compose: `COMPUTER_WALLPAPER`). Default is a generated gradient |
 | `WORKSPACE_ROOT` | repository root | Maximum directory that approved workspace tools can access |
 | `WORKSPACE_MAX_FILE_BYTES` | `131072` | Read/write size limit for workspace files |
 | `APPROVAL_TIMEOUT_SECONDS` | `120` | How long a pending approval remains open |

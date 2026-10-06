@@ -265,6 +265,29 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         await self.provider.stop(status.computer_id)
         self.assertIsNone(self.provider.vnc_target(status.computer_id))
 
+    async def test_configured_wallpaper_is_mounted_read_only_over_the_default(self):
+        provider = DockerComputerProvider(
+            image="open-grok-bot-computer:test",
+            workspace_root=self.root / "computers",
+            seccomp_profile=self.root / "missing-seccomp.json",
+            start_timeout=0.5,
+            wallpaper="/srv/wallpaper.jpg",
+            docker_command=self.docker,
+        )
+        status = provider.get_or_create("bot-wall")
+
+        async def ready(_record):
+            return {"status": "healthy"}
+
+        provider._wait_until_ready = ready
+        await provider.start(status.computer_id)
+        run_args = self.docker.run_args()
+        self.assertIn("type=bind,src=/srv/wallpaper.jpg,dst=/opt/open-grok-computer/wallpaper,readonly", run_args)
+
+        # Without a wallpaper nothing extra is mounted.
+        plain = [a for a in self.docker.run_args() if "wallpaper" in a]
+        self.assertEqual(len(plain), 1)
+
     def test_unknown_workspace_mode_is_rejected(self):
         with self.assertRaises(ValueError):
             DockerComputerProvider(workspace_root=self.root / "computers", workspace_mode="nfs")

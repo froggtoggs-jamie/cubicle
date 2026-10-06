@@ -59,6 +59,7 @@ services:
       COMPUTER_DOCKER_NETWORK: open-grok-bot-computers
       COMPUTER_DOCKER_WORKSPACE_MODE: ${COMPUTER_DOCKER_WORKSPACE_MODE:-volume}
       COMPUTER_DOCKER_HOST_WORKSPACE_ROOT: ${COMPUTER_DOCKER_HOST_WORKSPACE_ROOT:-}
+      COMPUTER_DOCKER_WALLPAPER: ${COMPUTER_WALLPAPER:-}
       # The Docker CLI inside the API only ever reaches the socket proxy.
       DOCKER_HOST: tcp://docker-socket-proxy:2375
     volumes:

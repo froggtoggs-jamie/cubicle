@@ -77,6 +77,7 @@ class DockerComputerProvider:
         network: Optional[str] = None,
         workspace_mode: Optional[str] = None,
         host_workspace_root: Optional[str] = None,
+        wallpaper: Optional[str] = None,
         docker_command: Optional[DockerCommand] = None,
     ):
         self.docker_binary = docker_binary or settings.COMPUTER_DOCKER_BINARY
@@ -99,6 +100,7 @@ class DockerComputerProvider:
             if host_workspace_root is not None
             else settings.COMPUTER_DOCKER_HOST_WORKSPACE_ROOT
         ).strip()
+        self.wallpaper = (wallpaper if wallpaper is not None else settings.COMPUTER_DOCKER_WALLPAPER).strip()
         self._docker_command = docker_command or self._run_docker
         self._runtimes: Dict[str, _RuntimeRecord] = {}
         self._lock = asyncio.Lock()
@@ -220,6 +222,12 @@ class DockerComputerProvider:
     def _runtime_url(record: _RuntimeRecord, route: str) -> str:
         return f"http://{record.host}:{record.port}{route}"
 
+    def _wallpaper_args(self) -> list:
+        if not self.wallpaper:
+            return []
+        # Mounted over the image's generated default; start.sh applies it.
+        return ["--mount", f"type=bind,src={self.wallpaper},dst=/opt/open-grok-computer/wallpaper,readonly"]
+
     async def _remove_stale_container(self, record: _RuntimeRecord) -> None:
         """Remove a leftover container that still holds this computer's name.
 
@@ -260,6 +268,7 @@ class DockerComputerProvider:
             "/home/pwuser:rw,nosuid,size=1g,uid=1001,gid=1001",
             "--mount",
             self._workspace_mount(record),
+            *self._wallpaper_args(),
             "--cpus",
             self.cpu_limit,
             "--memory",

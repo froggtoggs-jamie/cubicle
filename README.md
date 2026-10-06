@@ -303,7 +303,7 @@ With an OpenAI-compatible provider the model is offered these functions. The gat
 | `<app>_<action>` for every app connected through Composio, e.g. `gmail_fetch_emails`, `github_create_a_pull_request` | `connector.composio_read` or `connector.composio_action` | no for tools Composio marks read-only, yes for everything else |
 | `github_list_issues`, `github_create_issue` | `connector.github_*` | no / yes (fallback when the Composio catalog cannot be fetched) |
 
-Computer tools appear only when `COMPUTER_PROVIDER=docker`. Connector tools appear for each toolkit with an active Composio connection; by default only the tools Composio flags as important are offered, at most `COMPOSIO_TOOLS_PER_TOOLKIT` per app (see `COMPOSIO_IMPORTANT_TOOLS_ONLY`). Results are trimmed to 20 KB before they are returned to the model, and a screenshot is attached as an image message when the model accepts images.
+Computer tools appear only when `COMPUTER_PROVIDER=docker`. Connector tools appear for each toolkit with an active Composio connection. If the toolkit's auth config in the Composio dashboard restricts the tools available for execution, exactly those tools are offered; otherwise only the tools Composio flags as important are, at most `COMPOSIO_TOOLS_PER_TOOLKIT` per app (see `COMPOSIO_IMPORTANT_TOOLS_ONLY`). Results are trimmed to 20 KB before they are returned to the model, and a screenshot is attached as an image message when the model accepts images.
 
 ### Approved workspace commands
 

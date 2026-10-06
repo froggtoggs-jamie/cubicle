@@ -73,6 +73,7 @@ class ComposioService:
         # Tool catalogs change rarely; connections change when the user acts.
         self._tools_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
         self._connected_cache: Optional[Tuple[float, List[str]]] = None
+        self._allowed_cache: Dict[str, Tuple[float, Optional[List[str]]]] = {}
 
     def get_api_key(self) -> str:
         config = self.storage.get_settings()
@@ -186,6 +187,38 @@ class ComposioService:
     def forget_connections(self) -> None:
         """Drop the cached connection list after the user connects or disconnects."""
         self._connected_cache = None
+        self._allowed_cache = {}
+
+    async def allowed_tools(self, toolkit_slug: str, api_key: Optional[str] = None) -> Optional[List[str]]:
+        """The allow list set on the toolkit's auth config in the Composio dashboard.
+
+        Returns None when no restriction applies. With several enabled auth
+        configs for one toolkit, the lists are combined; a config without a
+        list means the toolkit is unrestricted.
+        """
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        now = time.monotonic()
+        cached = self._allowed_cache.get(slug)
+        if cached and cached[0] > now:
+            return list(cached[1]) if cached[1] is not None else None
+        data = await self._request("GET", "/auth_configs", api_key=api_key, params={"toolkit_slug": slug, "limit": 50})
+        items = data.get("items") if isinstance(data, dict) else None
+        allowed: List[str] = []
+        restricted = False
+        unrestricted = False
+        for config in items or []:
+            if not isinstance(config, dict) or str(config.get("status") or "ENABLED").upper() != "ENABLED":
+                continue
+            access = config.get("tool_access_config") if isinstance(config.get("tool_access_config"), dict) else {}
+            tools = [str(t) for t in (access.get("tools_available_for_execution") or []) if _SAFE_TOOL_SLUG.fullmatch(str(t))]
+            if tools:
+                restricted = True
+                allowed.extend(t for t in tools if t not in allowed)
+            else:
+                unrestricted = True
+        result = allowed if restricted and not unrestricted else None
+        self._allowed_cache[slug] = (now + CONNECTED_CACHE_SECONDS, result)
+        return list(result) if result is not None else None
 
     async def list_tools(
         self,

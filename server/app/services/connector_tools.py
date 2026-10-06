@@ -127,11 +127,22 @@ async def connector_tool_specs(service: Any = None) -> List[ToolSpec]:
     per_toolkit = max(1, settings.COMPOSIO_TOOLS_PER_TOOLKIT)
     for toolkit in sorted(toolkits):
         try:
-            tools = await service.list_tools(
-                toolkit,
-                important_only=settings.COMPOSIO_IMPORTANT_TOOLS_ONLY,
-                limit=per_toolkit,
-            )
+            # An allow list set in the Composio dashboard wins over the
+            # "important" heuristic: offer exactly those tools, whether or
+            # not Composio considers them important.
+            allowed = None
+            if hasattr(service, "allowed_tools"):
+                allowed = await service.allowed_tools(toolkit)
+            if allowed is not None:
+                tools = await service.list_tools(toolkit, important_only=False, limit=200)
+                wanted = set(allowed)
+                tools = [tool for tool in tools if tool.get("slug") in wanted]
+            else:
+                tools = await service.list_tools(
+                    toolkit,
+                    important_only=settings.COMPOSIO_IMPORTANT_TOOLS_ONLY,
+                    limit=per_toolkit,
+                )
         except ConnectorServiceError as exc:
             logger.warning("Could not list %s tools: %s", toolkit, exc)
             continue

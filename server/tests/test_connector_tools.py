@@ -50,11 +50,15 @@ GMAIL_FETCH = {
 
 
 class FakeComposio:
-    def __init__(self, key="k", toolkits=("gmail", "github"), fail_list=False):
+    def __init__(self, key="k", toolkits=("gmail", "github"), fail_list=False, allowed=None):
         self._key = key
         self._toolkits = list(toolkits)
         self._fail_list = fail_list
+        self._allowed = allowed or {}
         self.listed = []
+
+    async def allowed_tools(self, toolkit):
+        return self._allowed.get(toolkit)
 
     def get_api_key(self):
         return self._key
@@ -67,7 +71,10 @@ class FakeComposio:
         if self._fail_list and toolkit == "github":
             raise ConnectorServiceError("scoped key")
         if toolkit == "gmail":
-            return [GMAIL_SEND, GMAIL_FETCH, {"slug": "GMAIL_OLD", "is_deprecated": True, "toolkit": {"slug": "gmail"}}]
+            tools = [GMAIL_SEND, GMAIL_FETCH, {"slug": "GMAIL_OLD", "is_deprecated": True, "toolkit": {"slug": "gmail"}}]
+            if not important_only:
+                tools.append({"slug": "GMAIL_LIST_FILTERS", "toolkit": {"slug": "gmail", "name": "Gmail"}, "tags": ["readOnlyHint"]})
+            return tools
         return [{"slug": "GITHUB_" + "X" * 70, "toolkit": {"slug": "github"}}, {"slug": "GITHUB_LIST_BRANCHES", "toolkit": {"slug": "github"}, "tags": ["readOnlyHint"]}]
 
 
@@ -108,6 +115,13 @@ class SpecTests(unittest.TestCase):
         specs = asyncio.run(connector_tool_specs(service))
         self.assertEqual([s.name for s in specs], ["github_list_branches", "gmail_send_email", "gmail_fetch_emails"])
         self.assertEqual([t for t, _, _ in service.listed], ["github", "gmail"])
+
+    def test_dashboard_allow_list_wins_over_the_important_subset(self):
+        service = FakeComposio(toolkits=("gmail",), allowed={"gmail": ["GMAIL_SEND_EMAIL", "GMAIL_LIST_FILTERS"]})
+        specs = asyncio.run(connector_tool_specs(service))
+        self.assertEqual([s.name for s in specs], ["gmail_send_email", "gmail_list_filters"])
+        # The full catalog was requested so non-important allowed tools are found.
+        self.assertEqual(service.listed, [("gmail", False, 200)])
 
     def test_no_key_or_failures_degrade_to_no_connector_tools(self):
         self.assertEqual(asyncio.run(connector_tool_specs(FakeComposio(key=""))), [])

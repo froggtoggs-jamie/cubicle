@@ -134,9 +134,12 @@ async def connector_tool_specs(service: Any = None) -> List[ToolSpec]:
             if hasattr(service, "allowed_tools"):
                 allowed = await service.allowed_tools(toolkit)
             if allowed is not None:
-                tools = await service.list_tools(toolkit, important_only=False, limit=200)
+                tools = await service.list_tools(toolkit, important_only=False, limit=200, tool_slugs=list(allowed))
                 wanted = set(allowed)
                 tools = [tool for tool in tools if tool.get("slug") in wanted]
+                missing = sorted(wanted - {tool.get("slug") for tool in tools})
+                if missing:
+                    logger.info("Allowed %s tools not in Composio's catalog: %s", toolkit, ", ".join(missing))
             else:
                 tools = await service.list_tools(
                     toolkit,

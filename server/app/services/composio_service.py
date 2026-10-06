@@ -226,21 +226,39 @@ class ComposioService:
         *,
         important_only: bool = True,
         limit: int = 40,
+        tool_slugs: Optional[List[str]] = None,
         api_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Composio's tool descriptions (slug, description, input schema, tags) for one toolkit."""
+        """Composio's tool descriptions (slug, description, input schema, tags) for one toolkit.
+
+        With `tool_slugs`, exactly those tools are requested (in batches), so
+        an allow list is honoured even for toolkits with hundreds of tools.
+        """
         slug = self._validate_toolkit_slug(toolkit_slug)
-        cache_key = f"{slug}:{int(bool(important_only))}:{limit}"
+        wanted = sorted({s for s in (tool_slugs or []) if _SAFE_TOOL_SLUG.fullmatch(s)})
+        cache_key = f"{slug}:{int(bool(important_only))}:{limit}:{','.join(wanted)}"
         now = time.monotonic()
         cached = self._tools_cache.get(cache_key)
         if cached and cached[0] > now:
             return list(cached[1])
-        params: Dict[str, Any] = {"toolkit_slug": slug, "limit": max(1, min(int(limit), 200))}
-        if important_only:
-            params["important"] = "true"
-        data = await self._request("GET", "/tools", api_key=api_key, params=params)
-        items = data.get("items") if isinstance(data, dict) else None
-        tools = [item for item in (items or []) if isinstance(item, dict) and item.get("slug")]
+
+        tools: List[Dict[str, Any]] = []
+        if wanted:
+            for start in range(0, len(wanted), 50):
+                batch = wanted[start:start + 50]
+                data = await self._request(
+                    "GET", "/tools", api_key=api_key,
+                    params={"toolkit_slug": slug, "tool_slugs": ",".join(batch), "limit": len(batch)},
+                )
+                items = data.get("items") if isinstance(data, dict) else None
+                tools.extend(item for item in (items or []) if isinstance(item, dict) and item.get("slug"))
+        else:
+            params: Dict[str, Any] = {"toolkit_slug": slug, "limit": max(1, min(int(limit), 200))}
+            if important_only:
+                params["important"] = "true"
+            data = await self._request("GET", "/tools", api_key=api_key, params=params)
+            items = data.get("items") if isinstance(data, dict) else None
+            tools = [item for item in (items or []) if isinstance(item, dict) and item.get("slug")]
         self._tools_cache[cache_key] = (now + TOOLS_CACHE_SECONDS, tools)
         return list(tools)
 

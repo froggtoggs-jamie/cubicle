@@ -66,8 +66,12 @@ class FakeComposio:
     async def list_connected_toolkits(self):
         return list(self._toolkits)
 
-    async def list_tools(self, toolkit, *, important_only=True, limit=40):
-        self.listed.append((toolkit, important_only, limit))
+    async def list_tools(self, toolkit, *, important_only=True, limit=40, tool_slugs=None):
+        self.listed.append((toolkit, important_only, limit) if tool_slugs is None else (toolkit, sorted(tool_slugs)))
+        if tool_slugs is not None:
+            catalog = await self.list_tools(toolkit, important_only=False, limit=limit)
+            self.listed.pop()
+            return [t for t in catalog if t.get("slug") in set(tool_slugs)]
         if self._fail_list and toolkit == "github":
             raise ConnectorServiceError("scoped key")
         if toolkit == "gmail":
@@ -120,8 +124,8 @@ class SpecTests(unittest.TestCase):
         service = FakeComposio(toolkits=("gmail",), allowed={"gmail": ["GMAIL_SEND_EMAIL", "GMAIL_LIST_FILTERS"]})
         specs = asyncio.run(connector_tool_specs(service))
         self.assertEqual([s.name for s in specs], ["gmail_send_email", "gmail_list_filters"])
-        # The full catalog was requested so non-important allowed tools are found.
-        self.assertEqual(service.listed, [("gmail", False, 200)])
+        # Exactly the allowed slugs were requested, not a page of the catalog.
+        self.assertEqual(service.listed, [("gmail", ["GMAIL_LIST_FILTERS", "GMAIL_SEND_EMAIL"])])
 
     def test_no_key_or_failures_degrade_to_no_connector_tools(self):
         self.assertEqual(asyncio.run(connector_tool_specs(FakeComposio(key=""))), [])

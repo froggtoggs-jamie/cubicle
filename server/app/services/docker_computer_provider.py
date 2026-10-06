@@ -217,8 +217,23 @@ class DockerComputerProvider:
     def _runtime_url(record: _RuntimeRecord, route: str) -> str:
         return f"http://{record.host}:{record.port}{route}"
 
+    async def _remove_stale_container(self, record: _RuntimeRecord) -> None:
+        """Remove a leftover container that still holds this computer's name.
+
+        The API keeps runtime records in memory, so after a restart a sandbox
+        started by the previous process is unknown to it (and its token is
+        gone). Without this, `docker run --name` fails with a name conflict
+        and the computer is stuck in the error state until someone cleans up
+        by hand.
+        """
+        try:
+            await self._docker(["rm", "-f", self._container_name(record)])
+        except ComputerProviderError:
+            pass  # Nothing with that name exists; that is the normal case.
+
     async def _launch(self, record: _RuntimeRecord) -> None:
         record.workspace.mkdir(parents=True, exist_ok=True)
+        await self._remove_stale_container(record)
         args = [
             "run",
             "-d",

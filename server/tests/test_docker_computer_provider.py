@@ -16,7 +16,13 @@ class FakeDockerCommand:
             return "container-test"
         if args[0] == "port":
             return "127.0.0.1:45678"
+        if args[0] == "rm":
+            # No stale container exists in these tests, like a real daemon says.
+            raise ComputerProviderError("Error response from daemon: No such container")
         return ""
+
+    def run_args(self):
+        return next(call[0] for call in self.calls if call[0][0] == "run")
 
 
 class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -47,7 +53,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(started.state, "running")
         self.assertEqual(started.provider, "docker-playwright")
         self.assertTrue((self.root / "computers" / status.computer_id).is_dir())
-        run_args = self.docker.calls[0][0]
+        run_args = self.docker.run_args()
         self.assertEqual(run_args[0], "run")
         self.assertIn("--read-only", run_args)
         self.assertIn("--cap-drop", run_args)
@@ -107,6 +113,20 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(screen["frame_id"], "frame-real-1")
         self.assertEqual(self.provider.describe("bot-test").frame_id, "frame-real-1")
 
+    async def test_a_stale_container_with_the_same_name_is_removed_before_launch(self):
+        status = self.provider.get_or_create("bot-test")
+
+        async def ready(_record):
+            return {"status": "healthy"}
+
+        self.provider._wait_until_ready = ready
+        await self.provider.start(status.computer_id)
+
+        first = self.docker.calls[0][0]
+        self.assertEqual(first[:2], ("rm", "-f"))
+        self.assertEqual(first[2], f"open-grok-computer-{status.computer_id[-70:]}")
+        self.assertEqual(self.docker.calls[1][0][0], "run")
+
     async def test_network_mode_joins_a_docker_network_instead_of_publishing(self):
         provider = DockerComputerProvider(
             image="open-grok-bot-computer:test",
@@ -124,7 +144,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         provider._wait_until_ready = ready
         await provider.start(status.computer_id)
 
-        run_args = self.docker.calls[0][0]
+        run_args = self.docker.run_args()
         self.assertIn("--network", run_args)
         self.assertIn("open-grok-bot-computers", run_args)
         self.assertNotIn("--publish", run_args)
@@ -174,7 +194,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         provider._wait_until_ready = ready
         await provider.start(status.computer_id)
 
-        run_args = self.docker.calls[0][0]
+        run_args = self.docker.run_args()
         mount = run_args[run_args.index("--mount") + 1]
         self.assertEqual(
             mount, f"type=volume,src=open-grok-computer-ws-{status.computer_id[-60:]},dst=/workspace"
@@ -197,7 +217,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         provider._wait_until_ready = ready
         await provider.start(status.computer_id)
 
-        run_args = self.docker.calls[0][0]
+        run_args = self.docker.run_args()
         mount = run_args[run_args.index("--mount") + 1]
         self.assertTrue(mount.startswith("type=bind,src="))
         self.assertIn(status.computer_id, mount)

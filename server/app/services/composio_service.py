@@ -170,6 +170,48 @@ class ComposioService:
                 status[slug] = {"connected": False, "pending_status": account.get("status")}
         return status
 
+    async def toolkit_auth_info(self, toolkit_slug: str, api_key: Optional[str] = None) -> Dict[str, Any]:
+        """Which auth schemes a toolkit offers and which Composio manages itself."""
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        data = await self._request("GET", f"/toolkits/{slug}", api_key=api_key)
+        if not isinstance(data, dict):
+            return {"slug": slug, "managed_schemes": [], "auth_schemes": []}
+        details = data.get("auth_config_details") or []
+        schemes = [
+            str(item.get("mode"))
+            for item in details
+            if isinstance(item, dict) and item.get("mode")
+        ] or [str(s) for s in (data.get("auth_schemes") or [])]
+        return {
+            "slug": slug,
+            "managed_schemes": [str(s) for s in (data.get("composio_managed_auth_schemes") or [])],
+            "auth_schemes": schemes,
+        }
+
+    async def list_auth_config_slugs(self, api_key: Optional[str] = None) -> set:
+        """Toolkit slugs that already have an enabled auth config in the project."""
+        slugs: set = set()
+        cursor: Optional[str] = None
+        for _ in range(5):
+            params: Dict[str, Any] = {"limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._request("GET", "/auth_configs", api_key=api_key, params=params)
+            if not isinstance(data, dict):
+                break
+            for item in data.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("status") or "ENABLED").upper() != "ENABLED":
+                    continue
+                slug = str((item.get("toolkit") or {}).get("slug") or "").lower()
+                if slug:
+                    slugs.add(slug)
+            cursor = data.get("next_cursor")
+            if not cursor:
+                break
+        return slugs
+
     async def ensure_auth_config(self, toolkit_slug: str, api_key: Optional[str] = None) -> str:
         """Return an enabled auth config id for the toolkit, creating a
         Composio-managed one when the project has none yet."""
@@ -188,6 +230,15 @@ class ComposioService:
         if items:
             managed = [item for item in items if item.get("is_composio_managed")]
             return str((managed or items)[0]["id"])
+
+        info = await self.toolkit_auth_info(slug, api_key=api_key)
+        if not info["managed_schemes"]:
+            schemes = ", ".join(info["auth_schemes"]) or "its own credentials"
+            raise ConnectorServiceError(
+                f"Composio has no managed credentials for {slug}. Create an auth config for it in "
+                f"the Composio dashboard (Auth Configs) using your own credentials ({schemes}), "
+                "then connect again."
+            )
 
         created = await self._request(
             "POST",

@@ -20,7 +20,8 @@ class EmptyStorage:
 class FakeComposio:
     """Minimal stand-in for the Composio v3 REST API."""
 
-    def __init__(self, accounts=None, auth_configs=None, execute=None, fail_with=None):
+    def __init__(self, accounts=None, auth_configs=None, execute=None, fail_with=None, unmanaged=()):
+        self.unmanaged = set(unmanaged)
         self.accounts = accounts or []
         self.auth_configs = auth_configs or []
         self.execute = execute or {"successful": True, "data": {}, "error": None}
@@ -36,6 +37,17 @@ class FakeComposio:
             return httpx.Response(200, json={"items": self.accounts, "total_items": len(self.accounts)})
         if request.method == "GET" and path == "/api/v3/auth_configs":
             return httpx.Response(200, json={"items": self.auth_configs})
+        if request.method == "GET" and path.startswith("/api/v3/toolkits/"):
+            slug = path.rsplit("/", 1)[-1]
+            managed = [] if slug in self.unmanaged else ["OAUTH2"]
+            return httpx.Response(
+                200,
+                json={
+                    "slug": slug,
+                    "composio_managed_auth_schemes": managed,
+                    "auth_config_details": [{"mode": "OAUTH2"}, {"mode": "API_KEY"}],
+                },
+            )
         if request.method == "POST" and path == "/api/v3/auth_configs":
             return httpx.Response(
                 201,
@@ -98,14 +110,36 @@ class ComposioServiceTests(unittest.TestCase):
             methods,
             [
                 ("GET", "/api/v3/auth_configs"),
+                ("GET", "/api/v3/toolkits/github"),
                 ("POST", "/api/v3/auth_configs"),
                 ("POST", "/api/v3/connected_accounts/link"),
             ],
         )
-        created = json.loads(fake.requests[1].content)
+        created = json.loads(fake.requests[2].content)
         self.assertEqual(created, {"toolkit": {"slug": "github"}, "auth_config": {"type": "use_composio_managed_auth"}})
-        linked = json.loads(fake.requests[2].content)
+        linked = json.loads(fake.requests[3].content)
         self.assertEqual(linked, {"auth_config_id": "ac_new", "user_id": "test-user"})
+
+    def test_toolkit_without_managed_credentials_gets_setup_instructions(self):
+        fake = FakeComposio(auth_configs=[], unmanaged={"klaviyo"})
+        with self.assertRaisesRegex(ConnectorServiceError, "no managed credentials for klaviyo.*OAUTH2, API_KEY"):
+            asyncio.run(_service(fake).create_auth_link("klaviyo"))
+        self.assertNotIn("POST", [r.method for r in fake.requests])
+
+    def test_auth_config_slugs_follow_pagination_and_skip_disabled(self):
+        pages = {
+            None: {"items": [{"status": "ENABLED", "toolkit": {"slug": "klaviyo"}}], "next_cursor": "p2"},
+            "p2": {"items": [{"status": "DISABLED", "toolkit": {"slug": "x"}}, {"toolkit": {"slug": "Notion"}}], "next_cursor": None},
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=pages[request.url.params.get("cursor")])
+
+        def factory(timeout):
+            return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
+
+        service = ComposioService(KeyedStorage(), client_factory=factory, user_id="test-user")
+        self.assertEqual(asyncio.run(service.list_auth_config_slugs()), {"klaviyo", "notion"})
 
     def test_auth_link_prefers_an_existing_composio_managed_config(self):
         fake = FakeComposio(

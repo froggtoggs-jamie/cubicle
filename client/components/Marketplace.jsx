@@ -67,7 +67,37 @@ function normalizeCard(app) {
     blurb: app.blurb || app.description || 'Connector integration',
     domain: app.domain || '',
     logo: app.logo || null,
+    // From the live catalog. Composio lends its own OAuth app for "managed"
+    // toolkits; the rest need an auth config with your credentials first.
+    managedAuth: typeof app.managed_auth === 'boolean' ? app.managed_auth : null,
+    authSchemes: Array.isArray(app.auth_schemes) ? app.auth_schemes : [],
+    hasAuthConfig: Boolean(app.has_auth_config),
+    needsSetup: Boolean(app.needs_setup),
   };
+}
+
+const COMPOSIO_DASHBOARD_URL = 'https://platform.composio.dev/';
+
+const SCHEME_LABELS = {
+  OAUTH2: 'an OAuth app (client ID and secret)',
+  OAUTH1: 'an OAuth 1.0 app',
+  API_KEY: 'an API key',
+  BEARER_TOKEN: 'a bearer token',
+  BASIC: 'a username and password',
+  BASIC_WITH_JWT: 'a username and password',
+  SERVICE_ACCOUNT: 'a service account',
+  GOOGLE_SERVICE_ACCOUNT: 'a Google service account',
+  NO_AUTH: 'no credentials',
+};
+
+function describeSchemes(app) {
+  const labels = (app.authSchemes || []).map((scheme) => SCHEME_LABELS[scheme] || scheme.toLowerCase());
+  if (!labels.length) return 'your own credentials';
+  return labels.join(' or ');
+}
+
+function setupMessage(app) {
+  return `${app.label} has no Composio-managed credentials. In the Composio dashboard, open Auth Configs and create one for ${app.label} with ${describeSchemes(app)}, then refresh this page and connect.`;
 }
 
 function AppIcon({ app }) {
@@ -103,6 +133,7 @@ export default function Marketplace({ onOpenSettings }) {
   const [loading, setLoading] = useState(true);
   const [busySlug, setBusySlug] = useState(null);
   const [notice, setNotice] = useState('');
+  const [noticeLink, setNoticeLink] = useState('');
   const [error, setError] = useState('');
   const [refreshToken, setRefreshToken] = useState(0);
 
@@ -153,6 +184,7 @@ export default function Marketplace({ onOpenSettings }) {
   const toggle = async (app) => {
     if (busySlug) return;
     setNotice('');
+    setNoticeLink('');
     setError('');
 
     const isOn = connected.includes(app.slug);
@@ -163,6 +195,12 @@ export default function Marketplace({ onOpenSettings }) {
       setConnected(next);
       saveLocalEnabled(next);
       setNotice('Local preference saved. Add a Composio key to authorize a real account.');
+      return;
+    }
+
+    if (!isOn && app.needsSetup) {
+      setNotice(setupMessage(app));
+      setNoticeLink(COMPOSIO_DASHBOARD_URL);
       return;
     }
 
@@ -266,7 +304,22 @@ export default function Marketplace({ onOpenSettings }) {
             : 'border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-300'
         }`}>
           {error ? <FiAlertCircle className="mt-0.5 flex-shrink-0" /> : <FiCheck className="mt-0.5 flex-shrink-0" />}
-          <span>{error || notice}</span>
+          <span>
+            {error || notice}
+            {!error && noticeLink && (
+              <>
+                {' '}
+                <a
+                  href={noticeLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-2 hover:text-white"
+                >
+                  Open the Composio dashboard
+                </a>
+              </>
+            )}
+          </span>
         </div>
       )}
 
@@ -282,6 +335,7 @@ export default function Marketplace({ onOpenSettings }) {
           visible.map((app, index) => {
             const isOn = connected.includes(app.slug);
             const isBusy = busySlug === app.slug;
+            const needsSetup = configured && !isOn && app.needsSetup;
             return (
               <div
                 key={app.slug}
@@ -297,6 +351,11 @@ export default function Marketplace({ onOpenSettings }) {
                     {isOn && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 block flex-shrink-0" />}
                   </div>
                   <div className="text-[11px] text-zinc-500 truncate mt-0.5">{app.blurb}</div>
+                  {needsSetup && (
+                    <div className="text-[10px] text-amber-400/80 truncate mt-0.5">
+                      Bring your own credentials: {describeSchemes(app)}
+                    </div>
+                  )}
                 </div>
 
                 <button
@@ -304,10 +363,13 @@ export default function Marketplace({ onOpenSettings }) {
                   type="button"
                   disabled={Boolean(busySlug)}
                   onClick={() => toggle(app)}
+                  title={needsSetup ? 'Create an auth config for this app in the Composio dashboard first' : undefined}
                   className={`w-28 flex-shrink-0 py-1.5 rounded-xl text-[11px] font-semibold transition flex items-center justify-center gap-1.5 disabled:opacity-50 ${
                     isOn
                       ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/40 hover:bg-rose-500/15 hover:text-rose-400 hover:border-rose-500/30'
-                      : 'bg-[#1e1e22] text-zinc-400 border border-[#2a2a30] hover:text-white hover:bg-[#27272a]'
+                      : needsSetup
+                        ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20'
+                        : 'bg-[#1e1e22] text-zinc-400 border border-[#2a2a30] hover:text-white hover:bg-[#27272a]'
                   }`}
                 >
                   {isBusy ? (
@@ -316,6 +378,11 @@ export default function Marketplace({ onOpenSettings }) {
                     <>
                       <FiCheck className="text-xs" />
                       {configured ? 'Connected' : 'Enabled'}
+                    </>
+                  ) : needsSetup ? (
+                    <>
+                      <FiSettings className="text-xs" />
+                      Needs setup
                     </>
                   ) : (
                     <>

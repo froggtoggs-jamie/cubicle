@@ -78,17 +78,35 @@ async def catalog():
             if res.status_code == 200:
                 data = res.json()
                 items = data.get("items") or data.get("data") or []
-                cards = [
-                    {
-                        "slug": (t.get("slug") or t.get("key") or t.get("name") or "").lower(),
-                        "label": t.get("name") or t.get("slug") or "",
-                        "blurb": ((t.get("meta") or {}).get("description") or t.get("description") or "")[:90],
-                        "logo": (t.get("meta") or {}).get("logo") or t.get("logo"),
-                        "domain": None,
-                    }
-                    for t in items
-                    if isinstance(t, dict) and (t.get("slug") or t.get("key") or t.get("name"))
-                ]
+                # Toolkits with an auth config you created yourself are
+                # connectable even when Composio has no managed credentials.
+                try:
+                    own_configs = await composio_service.list_auth_config_slugs(api_key=composio_key)
+                except ConnectorServiceError:
+                    own_configs = set()
+                cards = []
+                for t in items:
+                    if not isinstance(t, dict) or not (t.get("slug") or t.get("key") or t.get("name")):
+                        continue
+                    slug = str(t.get("slug") or t.get("key") or t.get("name")).lower()
+                    managed = [str(s) for s in (t.get("composio_managed_auth_schemes") or [])]
+                    schemes = [str(s) for s in (t.get("auth_schemes") or [])]
+                    has_config = slug in own_configs
+                    cards.append(
+                        {
+                            "slug": slug,
+                            "label": t.get("name") or t.get("slug") or "",
+                            "blurb": ((t.get("meta") or {}).get("description") or t.get("description") or "")[:90],
+                            "logo": (t.get("meta") or {}).get("logo") or t.get("logo"),
+                            "domain": None,
+                            "managed_auth": bool(managed),
+                            "auth_schemes": schemes,
+                            "has_auth_config": has_config,
+                            # True when clicking Connect cannot work until an
+                            # auth config with your own credentials exists.
+                            "needs_setup": not managed and not has_config and not t.get("no_auth"),
+                        }
+                    )
                 if cards:
                     _toolkit_cache = {"cards": cards, "source": "api"}
                     _toolkit_cache_at = time.time()

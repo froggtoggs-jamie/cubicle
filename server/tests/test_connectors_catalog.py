@@ -17,9 +17,14 @@ class EmptyStorage:
         return {}
 
 
+# `connectors.httpx` is the httpx module itself, so patching AsyncClient on it
+# replaces the class globally for the duration of the test. Keep the real one.
+RealAsyncClient = httpx.AsyncClient
+
+
 def _client_factory(handler):
     def factory(*args, **kwargs):
-        return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=kwargs.get("timeout"))
+        return RealAsyncClient(transport=httpx.MockTransport(handler), timeout=kwargs.get("timeout"))
 
     return factory
 

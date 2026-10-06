@@ -64,34 +64,45 @@ async def catalog():
     if _toolkit_cache and (time.time() - _toolkit_cache_at) < 600:
         return {**_toolkit_cache, "configured": bool(composio_key)}
 
+    error = None
     if composio_key:
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 res = await client.get(
-                    f"{BACKEND_URL}/toolkits?limit=200&sort_by=usage",
+                    f"{BACKEND_URL}/toolkits",
+                    params={"limit": 200, "sort_by": "usage"},
                     headers={"x-api-key": composio_key},
                 )
-                if res.ok:
-                    data = res.json()
-                    items = data.get("items") or data.get("data") or []
-                    if items:
-                        cards = [
-                            {
-                                "slug": (t.get("slug") or t.get("key") or t.get("name") or "").lower(),
-                                "label": t.get("name") or t.get("slug") or "",
-                                "blurb": (t.get("meta", {}).get("description") or t.get("description") or "")[:90],
-                                "logo": t.get("meta", {}).get("logo") or t.get("logo"),
-                                "domain": None,
-                            }
-                            for t in items
-                        ]
-                        _toolkit_cache = {"cards": cards, "source": "api"}
-                        _toolkit_cache_at = time.time()
-                        return {**_toolkit_cache, "configured": True}
-        except Exception:
-            pass
+            # httpx responses have no `.ok`; the old check raised and the
+            # bare except silently fell back to the curated list every time.
+            if res.status_code == 200:
+                data = res.json()
+                items = data.get("items") or data.get("data") or []
+                cards = [
+                    {
+                        "slug": (t.get("slug") or t.get("key") or t.get("name") or "").lower(),
+                        "label": t.get("name") or t.get("slug") or "",
+                        "blurb": ((t.get("meta") or {}).get("description") or t.get("description") or "")[:90],
+                        "logo": (t.get("meta") or {}).get("logo") or t.get("logo"),
+                        "domain": None,
+                    }
+                    for t in items
+                    if isinstance(t, dict) and (t.get("slug") or t.get("key") or t.get("name"))
+                ]
+                if cards:
+                    _toolkit_cache = {"cards": cards, "source": "api"}
+                    _toolkit_cache_at = time.time()
+                    return {**_toolkit_cache, "configured": True}
+                error = "Composio returned an empty toolkit list."
+            else:
+                error = f"Composio toolkit listing failed (HTTP {res.status_code})."
+        except Exception as exc:
+            error = f"Composio toolkit listing failed: {exc}"
 
-    return {"cards": CURATED, "source": "curated", "configured": bool(composio_key)}
+    result = {"cards": CURATED, "source": "curated", "configured": bool(composio_key)}
+    if error:
+        result["error"] = error
+    return result
 
 
 @router.get("")

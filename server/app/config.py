@@ -33,6 +33,11 @@ class Settings:
     # model has no vision), always, or never.
     LLM_SCREENSHOTS_TO_MODEL: str = os.getenv("LLM_SCREENSHOTS_TO_MODEL", "auto").strip().lower()
     COMPOSIO_API_KEY: str = os.getenv("COMPOSIO_API_KEY", "")
+    # Connected apps are offered to the model as tools. Composio flags a
+    # subset of each toolkit as "important"; that keeps the list useful
+    # without flooding the context window.
+    COMPOSIO_IMPORTANT_TOOLS_ONLY: bool = os.getenv("COMPOSIO_IMPORTANT_TOOLS_ONLY", "1").strip().lower() in {"1", "true", "yes"}
+    COMPOSIO_TOOLS_PER_TOOLKIT: int = int(os.getenv("COMPOSIO_TOOLS_PER_TOOLKIT", "40"))
     DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "").strip() or (
         "grok-4-5" if LLM_PROVIDER == "muapi" else "x-ai/grok-4.5"
     )

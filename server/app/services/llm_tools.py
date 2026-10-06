@@ -27,6 +27,12 @@ class ToolSpec:
     parameters: Dict[str, Any]
     group: str
     needs_approval: bool
+    # Set for tools discovered from a connected app (see connector_tools).
+    connector: Optional[Dict[str, Any]] = None
+
+
+_SENSITIVE_ARGUMENT = re.compile(r"(password|secret|token|api[_-]?key|authorization|credential)", re.IGNORECASE)
+MAX_CONNECTOR_ARGUMENT_BYTES = 60_000
 
 
 _SAFE_REPOSITORY_PART = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
@@ -167,11 +173,21 @@ GITHUB_TOOLS: List[ToolSpec] = [
 ]
 
 
-def available_tools(*, computer: bool, github: bool) -> List[ToolSpec]:
+def available_tools(
+    *, computer: bool, github: bool = False, connectors: Optional[List[ToolSpec]] = None
+) -> List[ToolSpec]:
+    """The built-in tools plus any discovered for connected apps.
+
+    `github` keeps the two hand-written GitHub tools, used only when no live
+    connector catalog is available (they are a subset of what Composio offers).
+    """
     specs = list(WORKSPACE_TOOLS)
     if computer:
         specs.extend(COMPUTER_TOOLS)
-    if github:
+    if connectors:
+        taken = {spec.name for spec in specs}
+        specs.extend(spec for spec in connectors if spec.name not in taken)
+    elif github:
         specs.extend(GITHUB_TOOLS)
     return specs
 
@@ -207,6 +223,17 @@ def describe_tools(specs: List[ToolSpec]) -> str:
         )
     if "github" in groups:
         lines.append("- GitHub: github_list_issues and github_create_issue act through the user's connected GitHub account.")
+    if "connector" in groups:
+        toolkits: Dict[str, str] = {}
+        for spec in specs:
+            if spec.connector:
+                toolkits.setdefault(spec.connector["toolkit"], spec.connector.get("toolkit_name") or spec.connector["toolkit"])
+        apps = ", ".join(toolkits[key] for key in sorted(toolkits))
+        lines.append(
+            f"- Connected apps ({apps}): tools named <app>_<action>, such as {next(s.name for s in specs if s.connector)}, "
+            "act through the user's own accounts. Read tools run directly; anything that sends, changes, or deletes asks the user first. "
+            "Results are the app's raw API response."
+        )
     approval = sorted(spec.name for spec in specs if spec.needs_approval)
     if approval:
         lines.append("Tools that need approval: " + ", ".join(approval) + ".")
@@ -272,6 +299,7 @@ def build_invocation(
     name: str,
     arguments: Dict[str, Any],
     bot_id: str,
+    specs: Optional[List[ToolSpec]] = None,
 ) -> Union[WorkspaceToolCall, ActionInvocation]:
     """Validate a model tool call and build the gateway input for it."""
     if name == "workspace_list":
@@ -357,4 +385,46 @@ def build_invocation(
             display_arguments={"owner": owner, "repo": repo, "title": title, "body_bytes": len(body.encode("utf-8"))},
         )
 
+    if specs:
+        spec = next((s for s in specs if s.name == name and s.connector), None)
+        if spec is not None:
+            return connector_invocation(spec, arguments)
+
     raise ToolCallError(f"Unknown tool: {name}")
+
+
+def connector_invocation(spec: ToolSpec, arguments: Dict[str, Any]) -> ActionInvocation:
+    """Gateway input for a tool discovered from a connected app."""
+    info = spec.connector or {}
+    if not isinstance(arguments, dict):
+        raise ToolCallError("Tool arguments must be a JSON object.")
+    encoded = json.dumps(arguments, ensure_ascii=False, default=str)
+    if len(encoded.encode("utf-8")) > MAX_CONNECTOR_ARGUMENT_BYTES:
+        raise ToolCallError(f"Tool arguments exceed {MAX_CONNECTOR_ARGUMENT_BYTES} bytes.")
+    allowed = set((spec.parameters.get("properties") or {}).keys())
+    unknown = sorted(key for key in arguments if key not in allowed)
+    if unknown and allowed:
+        raise ToolCallError(f"Unknown argument(s) for {spec.name}: {', '.join(unknown)}")
+    missing = [key for key in spec.parameters.get("required") or [] if key not in arguments]
+    if missing:
+        raise ToolCallError(f"Missing required argument(s) for {spec.name}: {', '.join(missing)}")
+
+    # A short, safe preview: a few scalar arguments, never anything secret-like.
+    shown = []
+    for key, value in arguments.items():
+        if len(shown) >= 3 or _SENSITIVE_ARGUMENT.search(key) or isinstance(value, (dict, list)):
+            continue
+        text = str(value)
+        shown.append(f"{key}={text[:40]}{'...' if len(text) > 40 else ''}")
+    title = info.get("title") or spec.name
+    preview = f"{info.get('toolkit_name') or info.get('toolkit', 'app')}: {title}"
+    if shown:
+        preview = f"{preview} ({', '.join(shown)})"
+    action_name = "connector.composio_read" if info.get("read_only") else "connector.composio_action"
+    return ActionInvocation(
+        name=action_name,
+        arguments={"tool": info["slug"], "arguments": arguments},
+        target={"connector": info.get("toolkit"), "tool": info["slug"]},
+        preview=preview[:300],
+        display_arguments=arguments,
+    )

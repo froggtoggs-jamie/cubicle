@@ -17,6 +17,7 @@ from app.services.action_gateway import (
     action_gateway,
 )
 from app.services.composio_service import composio_service
+from app.services.connector_tools import connector_tool_specs
 from app.services.connector_actions import ConnectorCommandError, parse_connector_command
 from app.services.llm_tools import (
     ToolCallError,
@@ -189,7 +190,7 @@ async def _perform_action(
     return {"status": "failed", "error": f"Action failed ({action_name}): {error}", "request": action_request}
 
 
-def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
+async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
     """Capture everything a turn needs at start time and return its coroutine.
 
     The runner is executed by the TurnManager as its own task, so it must not
@@ -221,14 +222,16 @@ def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
     # Model tool calling is only possible on OpenAI-compatible servers. MUAPI
     # takes a single prompt, so there the slash commands remain the only tools.
     tools_enabled = settings.LLM_TOOLS_ENABLED and llm_config.provider != "muapi"
-    tool_specs = (
-        available_tools(
+    tool_specs: List[Any] = []
+    if tools_enabled:
+        # Every app connected through Composio becomes a set of tools. If the
+        # catalog cannot be fetched, fall back to the two built-in GitHub tools.
+        connector_specs = await connector_tool_specs(composio_service)
+        tool_specs = available_tools(
             computer=settings.COMPUTER_PROVIDER == "docker",
-            github=bool(composio_service.get_api_key()),
+            github=bool(composio_service.get_api_key()) and not connector_specs,
+            connectors=connector_specs,
         )
-        if tools_enabled
-        else []
-    )
     tool_definitions = openai_tool_definitions(tool_specs) if tool_specs else None
     tools_prompt = describe_tools(tool_specs)
 
@@ -357,7 +360,7 @@ def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
 
                 try:
                     arguments = parse_arguments(call.get("arguments"))
-                    invocation = build_invocation(call_name, arguments, thread_id)
+                    invocation = build_invocation(call_name, arguments, thread_id, specs=tool_specs)
                 except ToolCallError as exc:
                     record.update({"status": "failed", "error": str(exc)})
                     turn.emit({"type": "tool.failed", "tool": call_name, "callName": call_name, "error": str(exc)})
@@ -451,7 +454,7 @@ async def start_turn(thread_id: str, body: Optional[StartTurnRequest] = None):
     Returns 409 with the running turn when one is already in progress, so a
     second tab or machine attaches to it instead of starting a competing one.
     """
-    runner, selected_model = _build_turn_runner(thread_id, body.model if body else None)
+    runner, selected_model = await _build_turn_runner(thread_id, body.model if body else None)
     try:
         turn = turn_manager.start(thread_id, _bot_id_for(thread_id), selected_model, runner)
     except TurnBusyError as exc:

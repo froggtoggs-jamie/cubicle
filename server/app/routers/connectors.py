@@ -149,6 +149,8 @@ async def authorize(slug: str):
         return JSONResponse({"error": "No Composio key configured"}, status_code=400)
     try:
         link = await composio_service.create_auth_link(slug, api_key=composio_key)
+        # The new connection shows up as tools once the OAuth dance finishes.
+        composio_service.forget_connections()
         storage_service.add_audit_event({
             "event": "connector.authorization_requested",
             "connector": slug,
@@ -171,6 +173,7 @@ async def disconnect(slug: str):
         return JSONResponse({"error": "No Composio key configured"}, status_code=400)
     try:
         removed = await composio_service.disconnect(slug, api_key=composio_key)
+        composio_service.forget_connections()
         storage_service.add_audit_event({
             "event": "connector.disconnected",
             "connector": slug,

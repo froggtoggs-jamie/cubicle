@@ -188,6 +188,8 @@ The server reads these variables from the environment:
 | `LLM_SCREENSHOTS_TO_MODEL` | `auto` | Send sandbox screenshots to the model as images: `auto` (unless the model catalog says it has no vision), `always`, or `never` |
 | `MUAPI_API_KEY`, `MUAPI_BASE_URL` | empty | Legacy names. When `LLM_PROVIDER` is unset and `MUAPI_API_KEY` is present, the provider defaults to `muapi` and these values are used |
 | `COMPOSIO_API_KEY` | empty | Optional connector credential used when no key is saved in local settings |
+| `COMPOSIO_IMPORTANT_TOOLS_ONLY` | `1` | Offer the model only the tools Composio marks important for each connected app |
+| `COMPOSIO_TOOLS_PER_TOOLKIT` | `40` | Maximum tools offered to the model per connected app |
 | `DEFAULT_MODEL` | `x-ai/grok-4.5` (`grok-4-5` for MUAPI) | Initial model used for new settings and bots |
 | `DATA_DIR` | per-user hidden app directory | SQLite database, migration copies, and local key location |
 | `APP_ENCRYPTION_KEY` | generated mode-0600 key in `DATA_DIR` | Optional Fernet key for encrypted provider credentials |
@@ -298,10 +300,10 @@ With an OpenAI-compatible provider the model is offered these functions. The gat
 | `workspace_list`, `workspace_read`, `workspace_write` | `workspace.*` | yes |
 | `computer_start`, `computer_screenshot`, `computer_files_list`, `computer_request_takeover` | `computer.*` | no |
 | `computer_browser_navigate`, `computer_terminal_execute`, `computer_send_input` | `computer.*` | yes |
-| `github_list_issues` | `connector.github_list_issues` | no |
-| `github_create_issue` | `connector.github_create_issue` | yes |
+| `<app>_<action>` for every app connected through Composio, e.g. `gmail_fetch_emails`, `github_create_a_pull_request` | `connector.composio_read` or `connector.composio_action` | no for tools Composio marks read-only, yes for everything else |
+| `github_list_issues`, `github_create_issue` | `connector.github_*` | no / yes (fallback when the Composio catalog cannot be fetched) |
 
-Computer tools appear only when `COMPUTER_PROVIDER=docker`; GitHub tools only when a Composio key is configured. Results are trimmed to 20 KB before they are returned to the model, and a screenshot is attached as an image message when the model accepts images.
+Computer tools appear only when `COMPUTER_PROVIDER=docker`. Connector tools appear for each toolkit with an active Composio connection; by default only the tools Composio flags as important are offered, at most `COMPOSIO_TOOLS_PER_TOOLKIT` per app (see `COMPOSIO_IMPORTANT_TOOLS_ONLY`). Results are trimmed to 20 KB before they are returned to the model, and a screenshot is attached as an image message when the model accepts images.
 
 ### Approved workspace commands
 

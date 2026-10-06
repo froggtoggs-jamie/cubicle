@@ -9,9 +9,10 @@ REST endpoints instead: auth configs, connected accounts, and
 
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
+import time
 
 from app.config import settings
 from app.services.storage_service import StorageService, storage_service
@@ -27,6 +28,8 @@ GITHUB_CREATE_ISSUE_TOOL = "GITHUB_CREATE_AN_ISSUE"
 _SAFE_GITHUB_PART = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _SAFE_TOOLKIT_SLUG = re.compile(r"^[a-z0-9_-]{1,64}$")
 _SAFE_TOOL_SLUG = re.compile(r"^[A-Z0-9_]{1,128}$")
+TOOLS_CACHE_SECONDS = 600.0
+CONNECTED_CACHE_SECONDS = 60.0
 
 ClientFactory = Callable[[httpx.Timeout], httpx.AsyncClient]
 
@@ -67,6 +70,9 @@ class ComposioService:
         self._client_factory = client_factory or _default_client_factory
         self.user_id = user_id or DEFAULT_USER_ID
         self.base_url = base_url.rstrip("/")
+        # Tool catalogs change rarely; connections change when the user acts.
+        self._tools_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+        self._connected_cache: Optional[Tuple[float, List[str]]] = None
 
     def get_api_key(self) -> str:
         config = self.storage.get_settings()
@@ -152,6 +158,71 @@ class ComposioService:
         )
         items = data.get("items") if isinstance(data, dict) else None
         return [item for item in (items or []) if isinstance(item, dict)]
+
+    async def list_connected_toolkits(self, api_key: Optional[str] = None) -> List[str]:
+        """Slugs of every toolkit with an ACTIVE connection for this user."""
+        now = time.monotonic()
+        if self._connected_cache and self._connected_cache[0] > now:
+            return list(self._connected_cache[1])
+        data = await self._request(
+            "GET",
+            "/connected_accounts",
+            api_key=api_key,
+            params={"user_ids": self.user_id, "statuses": "ACTIVE", "limit": 100},
+        )
+        items = data.get("items") if isinstance(data, dict) else None
+        slugs: List[str] = []
+        for account in items or []:
+            if not isinstance(account, dict) or account.get("is_disabled"):
+                continue
+            if str(account.get("status") or "").upper() != "ACTIVE":
+                continue
+            slug = str((account.get("toolkit") or {}).get("slug") or "").lower()
+            if slug and _SAFE_TOOLKIT_SLUG.fullmatch(slug) and slug not in slugs:
+                slugs.append(slug)
+        self._connected_cache = (now + CONNECTED_CACHE_SECONDS, slugs)
+        return list(slugs)
+
+    def forget_connections(self) -> None:
+        """Drop the cached connection list after the user connects or disconnects."""
+        self._connected_cache = None
+
+    async def list_tools(
+        self,
+        toolkit_slug: str,
+        *,
+        important_only: bool = True,
+        limit: int = 40,
+        api_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Composio's tool descriptions (slug, description, input schema, tags) for one toolkit."""
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        cache_key = f"{slug}:{int(bool(important_only))}:{limit}"
+        now = time.monotonic()
+        cached = self._tools_cache.get(cache_key)
+        if cached and cached[0] > now:
+            return list(cached[1])
+        params: Dict[str, Any] = {"toolkit_slug": slug, "limit": max(1, min(int(limit), 200))}
+        if important_only:
+            params["important"] = "true"
+        data = await self._request("GET", "/tools", api_key=api_key, params=params)
+        items = data.get("items") if isinstance(data, dict) else None
+        tools = [item for item in (items or []) if isinstance(item, dict) and item.get("slug")]
+        self._tools_cache[cache_key] = (now + TOOLS_CACHE_SECONDS, tools)
+        return list(tools)
+
+    async def execute_tool(
+        self, name: str, arguments: Dict[str, Any], api_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Run a Composio tool and return its data, raising when Composio reports failure."""
+        response = (await self.call_tool(name, arguments, api_key=api_key))["data"]
+        if response.get("successful") is False or response.get("error"):
+            raise ConnectorServiceError(
+                extract_error_message(response.get("error"), f"Composio could not run {name}.")
+                if not isinstance(response.get("error"), str)
+                else str(response.get("error"))
+            )
+        return {"tool": name, "data": response.get("data")}
 
     async def connection_status(
         self, toolkit_slugs: List[str], api_key: Optional[str] = None

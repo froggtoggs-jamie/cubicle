@@ -1,11 +1,34 @@
 import os
 from pathlib import Path
 
+def _resolve_llm_provider() -> str:
+    """Pick the LLM provider, honouring the legacy MUAPI-only environment."""
+    explicit = os.getenv("LLM_PROVIDER", "").strip().lower().replace("-", "_")
+    if explicit in {"openai_compatible", "muapi"}:
+        return explicit
+    # Older deployments only set MUAPI_API_KEY. Keep them working unchanged.
+    if os.getenv("MUAPI_API_KEY", "").strip():
+        return "muapi"
+    return "openai_compatible"
+
+
 class Settings:
-    MUAPI_API_KEY: str = os.getenv("MUAPI_API_KEY", "")
-    MUAPI_BASE_URL: str = os.getenv("MUAPI_BASE_URL", "https://api.muapi.ai/api/v1").rstrip("/")
+    # Any OpenAI-compatible chat completions server (OpenRouter, Ollama,
+    # LM Studio, llama.cpp, vLLM, ...) or the legacy MUAPI prediction API.
+    LLM_PROVIDER: str = _resolve_llm_provider()
+    LLM_API_KEY: str = (
+        os.getenv("LLM_API_KEY", "").strip()
+        or (os.getenv("MUAPI_API_KEY", "").strip() if LLM_PROVIDER == "muapi" else "")
+    )
+    LLM_BASE_URL: str = (
+        os.getenv("LLM_BASE_URL", "").strip()
+        or (os.getenv("MUAPI_BASE_URL", "").strip() if LLM_PROVIDER == "muapi" else "")
+    ).rstrip("/")
+    LLM_REASONING_EFFORT: str = os.getenv("LLM_REASONING_EFFORT", "").strip().lower()
     COMPOSIO_API_KEY: str = os.getenv("COMPOSIO_API_KEY", "")
-    DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "grok-4-5")
+    DEFAULT_MODEL: str = os.getenv("DEFAULT_MODEL", "").strip() or (
+        "grok-4-5" if LLM_PROVIDER == "muapi" else "x-ai/grok-4.5"
+    )
     DATA_DIR: Path = Path(
         os.getenv("DATA_DIR", str(Path.home() / ".open-grok-bot"))
     ).expanduser().resolve()

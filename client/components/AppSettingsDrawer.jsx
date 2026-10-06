@@ -1,36 +1,73 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { FiX, FiCheck, FiEye, FiEyeOff, FiChevronDown } from "react-icons/fi";
+import React, { useState, useEffect } from "react";
+import { FiX, FiCheck, FiEye, FiEyeOff } from "react-icons/fi";
 import { fetchSettings, saveSettings } from "../lib/api";
-import { ALL_PROVIDERS, findModel } from "./ModelPicker";
+import ModelPicker from "./ModelPicker";
+
+const PROVIDERS = [
+  {
+    id: "openai_compatible",
+    name: "OpenAI-compatible",
+    defaultBaseUrl: "https://openrouter.ai/api/v1",
+    hint: "OpenRouter, Ollama, LM Studio, llama.cpp, vLLM, or the OpenAI API. The key is optional for local servers.",
+  },
+  {
+    id: "muapi",
+    name: "MUAPI (legacy)",
+    defaultBaseUrl: "https://api.muapi.ai/api/v1",
+    hint: "The original MUAPI prediction API. Requires a MUAPI key.",
+  },
+];
+
+const BASE_URL_PRESETS = [
+  { label: "OpenRouter", value: "https://openrouter.ai/api/v1" },
+  { label: "Ollama", value: "http://localhost:11434/v1" },
+  { label: "LM Studio", value: "http://localhost:1234/v1" },
+  { label: "llama.cpp", value: "http://localhost:8080/v1" },
+];
+
+const REASONING_OPTIONS = [
+  { value: "", label: "Not sent (server default)" },
+  { value: "none", label: "none" },
+  { value: "minimal", label: "minimal" },
+  { value: "low", label: "low" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high" },
+  { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
+];
 
 export default function AppSettingsDrawer({
   isOpen,
   onClose,
   currentModel,
+  models = [],
+  catalogError,
+  onRefreshModels,
   onUpdateDefaultModel,
+  onConnectionSaved,
   onProfileUpdate,
 }) {
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
 
-  // MUAPI Connection Credentials
-  const [muapiApiKey, setMuapiApiKey] = useState("");
-  const [muapiBaseUrl, setMuapiBaseUrl] = useState(
-    "https://api.muapi.ai/api/v1",
-  );
-  const [composioApiKey, setComposioApiKey] = useState("");
-  const [muapiConfigured, setMuapiConfigured] = useState(false);
-  const [composioConfigured, setComposioConfigured] = useState(false);
-  const [defaultModel, setDefaultModel] = useState("grok-4-5");
+  // LLM connection
+  const [provider, setProvider] = useState("openai_compatible");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [reasoningEffort, setReasoningEffort] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
-  const [showComposioKey, setShowComposioKey] = useState(false);
-  const [modelDropOpen, setModelDropOpen] = useState(false);
-  const modelDropRef = useRef(null);
-  const [activeProvTab, setActiveProvTab] = useState("grok");
 
+  // Composio
+  const [composioApiKey, setComposioApiKey] = useState("");
+  const [composioConfigured, setComposioConfigured] = useState(false);
+  const [showComposioKey, setShowComposioKey] = useState(false);
+
+  const [defaultModel, setDefaultModel] = useState("");
   const [savedField, setSavedField] = useState(null);
+  const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
     if (isOpen) {
@@ -41,40 +78,22 @@ export default function AppSettingsDrawer({
       setUserName(localName);
       setUserEmail(localEmail);
 
-      // Load MUAPI settings from backend
       fetchSettings()
         .then((data) => {
           if (data) {
-            setMuapiApiKey(data.muapi_api_key || "");
-            setMuapiConfigured(Boolean(data.muapi_api_key_configured));
-            setMuapiBaseUrl(
-              data.muapi_base_url || "https://api.muapi.ai/api/v1",
-            );
-            setComposioApiKey(data.composio_api_key || "");
+            setProvider(data.llm_provider || "openai_compatible");
+            setBaseUrl(data.llm_base_url || "");
+            setApiKey("");
+            setApiKeyConfigured(Boolean(data.llm_api_key_configured));
+            setReasoningEffort(data.llm_reasoning_effort || "");
+            setComposioApiKey("");
             setComposioConfigured(Boolean(data.composio_api_key_configured));
-            setDefaultModel(data.default_model || "grok-4-5");
+            setDefaultModel(data.default_model || "");
           }
         })
         .catch(console.error);
     }
   }, [isOpen]);
-
-  // Close model dropdown when clicking outside
-  useEffect(() => {
-    function handleOutside(e) {
-      if (modelDropRef.current && !modelDropRef.current.contains(e.target)) {
-        setModelDropOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
-  }, []);
-
-  // Auto-switch provider tab when defaultModel changes
-  useEffect(() => {
-    const found = findModel(defaultModel);
-    if (found) setActiveProvTab(found.provider.id);
-  }, [defaultModel]);
 
   // Sync from external model change (e.g. chat header ModelPicker)
   useEffect(() => {
@@ -86,40 +105,70 @@ export default function AppSettingsDrawer({
 
   if (!isOpen) return null;
 
+  const providerInfo = PROVIDERS.find((p) => p.id === provider) || PROVIDERS[0];
+
   const triggerSavedNotice = (field) => {
     setSavedField(field);
     setTimeout(() => setSavedField(null), 1500);
   };
 
-  const handleSaveMuapiSettings = async (field = "muapi") => {
+  const persist = async (field) => {
+    setSaveError("");
     try {
       const saved = await saveSettings({
-        muapi_api_key: muapiApiKey,
-        muapi_base_url: muapiBaseUrl,
+        llm_provider: provider,
+        llm_base_url: baseUrl.trim(),
+        llm_api_key: apiKey,
+        llm_reasoning_effort: reasoningEffort,
         composio_api_key: composioApiKey,
         default_model: defaultModel,
         theme: "dark",
       });
-      setMuapiApiKey("");
+      setApiKey("");
       setComposioApiKey("");
-      setMuapiConfigured(Boolean(saved?.muapi_api_key_configured));
+      setApiKeyConfigured(Boolean(saved?.llm_api_key_configured));
       setComposioConfigured(Boolean(saved?.composio_api_key_configured));
-      if (onUpdateDefaultModel && typeof onUpdateDefaultModel === "function") {
-        onUpdateDefaultModel(defaultModel);
-      }
       triggerSavedNotice(field);
+      return saved;
     } catch (err) {
       console.error("Failed to save settings:", err);
+      setSaveError(err?.message || "Failed to save settings.");
+      return null;
     }
   };
+
+  const handleSaveConnection = async () => {
+    const saved = await persist("connection");
+    if (saved && onConnectionSaved) onConnectionSaved(saved);
+  };
+
+  const handleSaveComposio = () => persist("composio_key");
+
+  const handleSaveModel = async () => {
+    const saved = await persist("model");
+    if (saved && onUpdateDefaultModel) onUpdateDefaultModel(defaultModel);
+  };
+
+  const SaveButton = ({ field, onClick }) => (
+    <button
+      suppressHydrationWarning={true}
+      type="button"
+      onClick={onClick}
+      className="px-3.5 py-2.5 rounded-xl border border-[#33333a] bg-[#222226] hover:bg-[#2c2c34] text-xs font-medium text-zinc-300 hover:text-white transition flex items-center gap-1 flex-shrink-0"
+    >
+      <FiCheck className={savedField === field ? "text-emerald-400" : "text-zinc-400"} />
+      <span>{savedField === field ? "Saved" : "Save"}</span>
+    </button>
+  );
+
+  const inputClass =
+    "w-full bg-[#222226] border border-[#2e2e34] rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-400 transition font-sans";
 
   return (
     <aside className="w-96 md:w-[420px] h-screen bg-[#111113] border-l border-[#1c1c20] flex flex-col z-30 shadow-2xl animate-fade-in select-none font-sans text-zinc-100 flex-shrink-0">
       {/* Drawer Header */}
       <div className="p-5 border-b border-[#1c1c20] flex items-center justify-between">
-        <h2 className="text-sm font-bold text-zinc-100 tracking-wide">
-          App Settings
-        </h2>
+        <h2 className="text-sm font-bold text-zinc-100 tracking-wide">App Settings</h2>
         <button
           suppressHydrationWarning={true}
           onClick={onClose}
@@ -136,9 +185,7 @@ export default function AppSettingsDrawer({
         <div className="bg-[#18181b] border border-[#27272a] rounded-2xl p-5 space-y-4 shadow-sm">
           <div>
             <h3 className="text-sm font-bold text-zinc-100">Profile</h3>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Shown in the sidebar. Saved as you go.
-            </p>
+            <p className="text-xs text-zinc-400 mt-0.5">Shown in the sidebar. Saved as you go.</p>
           </div>
 
           <div className="space-y-3">
@@ -152,7 +199,7 @@ export default function AppSettingsDrawer({
                 if (onProfileUpdate) onProfileUpdate(e.target.value);
               }}
               placeholder="Your name"
-              className="w-full bg-[#222226] border border-[#2e2e34] rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-400 transition font-sans"
+              className={inputClass}
             />
 
             <input
@@ -164,36 +211,99 @@ export default function AppSettingsDrawer({
                 localStorage.setItem("open_grok_user_email", e.target.value);
               }}
               placeholder="you@example.com"
-              className="w-full bg-[#222226] border border-[#2e2e34] rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-400 transition font-sans"
+              className={inputClass}
             />
           </div>
         </div>
 
-        {/* Connections Card Section */}
+        {/* LLM Connection Card */}
         <div className="bg-[#18181b] border border-[#27272a] rounded-2xl p-5 space-y-5 shadow-sm">
           <div>
-            <h3 className="text-sm font-bold text-zinc-100">Connections</h3>
+            <h3 className="text-sm font-bold text-zinc-100">Model server</h3>
             <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
               Shared by all bots. Keys are write-only and encrypted locally. Leave a key blank to keep it.
             </p>
           </div>
 
-          {/* MUAPI API Key */}
+          {/* Provider */}
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-              <span className="text-amber-400">•</span> MUAPI API Key
+              <span className="text-emerald-400">•</span> Provider
+            </label>
+            <div className="flex gap-2">
+              {PROVIDERS.map((p) => {
+                const active = provider === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    suppressHydrationWarning={true}
+                    type="button"
+                    onClick={() => setProvider(p.id)}
+                    className={`flex-1 px-3 py-2 rounded-xl border text-xs font-medium transition ${
+                      active
+                        ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300"
+                        : "border-[#2e2e34] bg-[#222226] text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] leading-relaxed text-zinc-500">{providerInfo.hint}</p>
+          </div>
+
+          {/* Base URL */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+              <span className="text-blue-400">•</span> Base URL
+            </label>
+            <input
+              suppressHydrationWarning={true}
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={providerInfo.defaultBaseUrl}
+              className={`${inputClass} font-mono text-cyan-300`}
+            />
+            {provider === "openai_compatible" && (
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                {BASE_URL_PRESETS.map((preset) => (
+                  <button
+                    key={preset.value}
+                    suppressHydrationWarning={true}
+                    type="button"
+                    onClick={() => setBaseUrl(preset.value)}
+                    className="px-2 py-1 rounded-lg border border-[#2e2e34] bg-[#1c1c20] text-[10px] text-zinc-400 hover:text-white hover:border-zinc-500 transition"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              Leave blank to use the provider default. The server must expose <span className="font-mono">/chat/completions</span> under this path.
+            </p>
+          </div>
+
+          {/* API Key */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+              <span className="text-amber-400">•</span> API Key
             </label>
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
                 <input
                   suppressHydrationWarning={true}
                   type={showApiKey ? "text" : "password"}
-                  value={muapiApiKey}
-                  onChange={(e) => setMuapiApiKey(e.target.value)}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
                   placeholder={
-                    muapiConfigured
+                    apiKeyConfigured
                       ? "Stored securely — enter to replace"
-                      : "Paste MUAPI API Key..."
+                      : provider === "muapi"
+                        ? "Paste MUAPI API key..."
+                        : "Paste API key (optional for local servers)..."
                   }
                   className="w-full bg-[#222226] border border-[#2e2e34] rounded-xl pl-3.5 pr-8 py-2.5 text-xs text-zinc-200 font-mono placeholder-zinc-500 focus:outline-none focus:border-zinc-400 transition"
                 />
@@ -206,25 +316,81 @@ export default function AppSettingsDrawer({
                   {showApiKey ? <FiEyeOff /> : <FiEye />}
                 </button>
               </div>
-              <button
-                suppressHydrationWarning={true}
-                type="button"
-                onClick={() => handleSaveMuapiSettings("muapi_key")}
-                className="px-3.5 py-2.5 rounded-xl border border-[#33333a] bg-[#222226] hover:bg-[#2c2c34] text-xs font-medium text-zinc-300 hover:text-white transition flex items-center gap-1 flex-shrink-0"
-              >
-                <FiCheck
-                  className={
-                    savedField === "muapi_key"
-                      ? "text-emerald-400"
-                      : "text-zinc-400"
-                  }
+              <SaveButton field="connection" onClick={handleSaveConnection} />
+            </div>
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              Saving reloads the model list from the server.
+            </p>
+          </div>
+
+          {saveError && (
+            <p className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">{saveError}</p>
+          )}
+        </div>
+
+        {/* Model defaults */}
+        <div className="bg-[#18181b] border border-[#27272a] rounded-2xl p-5 space-y-5 shadow-sm">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-100">Model defaults</h3>
+            <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+              Applied to new bots and to the active bot when saved.
+            </p>
+          </div>
+
+          {/* Default model */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+              <span className="text-purple-400">•</span> Default model
+            </label>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <ModelPicker
+                  currentModel={defaultModel}
+                  models={models}
+                  catalogError={catalogError}
+                  onRefresh={onRefreshModels}
+                  onSelectModel={setDefaultModel}
+                  align="left"
+                  direction="up"
+                  triggerClassName="w-full flex items-center gap-2 bg-[#222226] border border-[#2e2e34] rounded-xl px-3.5 py-2.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-400 transition cursor-pointer font-sans"
                 />
-                <span>{savedField === "muapi_key" ? "Saved" : "Save"}</span>
-              </button>
+              </div>
+              <SaveButton field="model" onClick={handleSaveModel} />
             </div>
           </div>
 
-          {/* Composio API Key */}
+          {/* Reasoning effort */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+              <span className="text-pink-400">•</span> Reasoning effort
+            </label>
+            <select
+              suppressHydrationWarning={true}
+              value={reasoningEffort}
+              onChange={(e) => setReasoningEffort(e.target.value)}
+              className={`${inputClass} cursor-pointer`}
+            >
+              {REASONING_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              Sent as <span className="font-mono">reasoning_effort</span> only when set; “none” turns thinking off on
+              servers that support it. Not every server accepts every level (xhigh and max are llama.cpp /
+              halogen-flash-server levels). A server that rejects the value returns an error in chat, so switch
+              back to “Not sent” if that happens. Saved with the default model.
+            </p>
+          </div>
+        </div>
+
+        {/* Connectors */}
+        <div className="bg-[#18181b] border border-[#27272a] rounded-2xl p-5 space-y-5 shadow-sm">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-100">Connectors</h3>
+          </div>
+
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
               <span className="text-cyan-400">•</span> Composio API Key
@@ -236,11 +402,7 @@ export default function AppSettingsDrawer({
                   type={showComposioKey ? "text" : "password"}
                   value={composioApiKey}
                   onChange={(e) => setComposioApiKey(e.target.value)}
-                  placeholder={
-                    composioConfigured
-                      ? "Stored securely — enter to replace"
-                      : "Optional connector key..."
-                  }
+                  placeholder={composioConfigured ? "Stored securely — enter to replace" : "Optional connector key..."}
                   className="w-full bg-[#222226] border border-[#2e2e34] rounded-xl pl-3.5 pr-8 py-2.5 text-xs text-zinc-200 font-mono placeholder-zinc-500 focus:outline-none focus:border-zinc-400 transition"
                 />
                 <button
@@ -253,215 +415,11 @@ export default function AppSettingsDrawer({
                   {showComposioKey ? <FiEyeOff /> : <FiEye />}
                 </button>
               </div>
-              <button
-                suppressHydrationWarning={true}
-                type="button"
-                onClick={() => handleSaveMuapiSettings("composio_key")}
-                className="px-3.5 py-2.5 rounded-xl border border-[#33333a] bg-[#222226] hover:bg-[#2c2c34] text-xs font-medium text-zinc-300 hover:text-white transition flex items-center gap-1 flex-shrink-0"
-              >
-                <FiCheck
-                  className={
-                    savedField === "composio_key"
-                      ? "text-emerald-400"
-                      : "text-zinc-400"
-                  }
-                />
-                <span>{savedField === "composio_key" ? "Saved" : "Save"}</span>
-              </button>
+              <SaveButton field="composio_key" onClick={handleSaveComposio} />
             </div>
             <p className="text-[10px] leading-relaxed text-zinc-500">
               Enables live connector catalog and OAuth links in Marketplace. Leave blank to keep the stored key.
             </p>
-          </div>
-
-          {/* Default LLM Model — custom dropdown */}
-          <div className="space-y-1.5" ref={modelDropRef}>
-            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-              <span className="text-purple-400">•</span> Default LLM Model
-            </label>
-            <div className="flex items-center gap-2">
-              {/* Custom Dropdown Trigger */}
-              <div className="relative flex-1">
-                <button
-                  suppressHydrationWarning={true}
-                  type="button"
-                  onClick={() => setModelDropOpen((v) => !v)}
-                  className="w-full flex items-center justify-between bg-[#222226] border border-[#2e2e34] rounded-xl px-3.5 py-2.5 text-xs text-zinc-200 focus:outline-none focus:border-zinc-400 transition cursor-pointer font-sans"
-                >
-                  <div className="flex items-center gap-2">
-                    {(() => {
-                      const info = findModel(defaultModel);
-                      return (
-                        <>
-                          <span
-                            className="font-bold text-[11px]"
-                            style={{
-                              color: info?.provider?.color || "#a78bfa",
-                            }}
-                          >
-                            {info?.provider?.icon || "Ø"}
-                          </span>
-                          <span className="truncate">
-                            {info?.model?.name || defaultModel}
-                          </span>
-                        </>
-                      );
-                    })()}
-                  </div>
-                  <FiChevronDown
-                    className={`text-zinc-400 transition-transform duration-200 ${modelDropOpen ? "rotate-180" : ""}`}
-                  />
-                </button>
-
-                {/* Dropdown Popover */}
-                {modelDropOpen && (
-                  <div
-                    className="absolute bottom-full mb-2 left-0 right-0 rounded-2xl shadow-2xl border border-[#2c2c34] z-50 flex overflow-hidden animate-fade-in"
-                    style={{ background: "#141417" }}
-                    suppressHydrationWarning={true}
-                  >
-                    {/* Provider Rail */}
-                    <div className="w-11 bg-[#101013] border-r border-[#26262b] flex flex-col items-center py-2.5 gap-1 flex-shrink-0">
-                      {ALL_PROVIDERS.map((prov) => {
-                        const isSel = activeProvTab === prov.id;
-                        return (
-                          <button
-                            key={prov.id}
-                            suppressHydrationWarning={true}
-                            type="button"
-                            onClick={() => setActiveProvTab(prov.id)}
-                            title={prov.name}
-                            className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold transition-all"
-                            style={
-                              isSel
-                                ? {
-                                    background: `${prov.color}20`,
-                                    color: prov.color,
-                                    boxShadow: `0 0 0 1px ${prov.color}40`,
-                                  }
-                                : { color: "#71717a" }
-                            }
-                          >
-                            {prov.icon}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Model List */}
-                    <div className="flex-1 flex flex-col min-h-0">
-                      {(() => {
-                        const activeProv =
-                          ALL_PROVIDERS.find((p) => p.id === activeProvTab) ||
-                          ALL_PROVIDERS[0];
-                        return (
-                          <>
-                            <div className="px-3 pt-3 pb-2 border-b border-[#1e1e22] flex-shrink-0">
-                              <div className="flex items-center gap-1.5">
-                                <span
-                                  className="font-bold text-sm"
-                                  style={{ color: activeProv.color }}
-                                >
-                                  {activeProv.icon}
-                                </span>
-                                <span className="text-xs font-bold text-white">
-                                  {activeProv.name}
-                                </span>
-                              </div>
-                              <p className="text-[10px] text-zinc-500 mt-0.5">
-                                {activeProv.models.length} models
-                              </p>
-                            </div>
-                            <div
-                              className="overflow-y-auto max-h-[200px] p-1.5 space-y-0.5"
-                              style={{
-                                scrollbarWidth: "thin",
-                                scrollbarColor: "#27272a transparent",
-                              }}
-                            >
-                              {activeProv.models.map((model) => {
-                                const isCurrent = defaultModel === model.id;
-                                return (
-                                  <div
-                                    key={model.id}
-                                    onClick={() => {
-                                      setDefaultModel(model.id);
-                                      setModelDropOpen(false);
-                                    }}
-                                    className="px-2.5 py-1.5 rounded-lg cursor-pointer transition-all flex items-center justify-between text-[11px]"
-                                    style={
-                                      isCurrent
-                                        ? {
-                                            background: `${activeProv.color}1a`,
-                                            color: activeProv.color,
-                                            fontWeight: 600,
-                                          }
-                                        : { color: "#a1a1aa" }
-                                    }
-                                    onMouseEnter={(e) => {
-                                      if (!isCurrent) {
-                                        e.currentTarget.style.background =
-                                          "#1e1e23";
-                                        e.currentTarget.style.color = "#e4e4e7";
-                                      }
-                                    }}
-                                    onMouseLeave={(e) => {
-                                      if (!isCurrent) {
-                                        e.currentTarget.style.background = "";
-                                        e.currentTarget.style.color = "#a1a1aa";
-                                      }
-                                    }}
-                                  >
-                                    <div className="flex items-center gap-1.5 min-w-0">
-                                      <span className="truncate">
-                                        {model.name}
-                                      </span>
-                                      {model.tag && (
-                                        <span
-                                          className="text-[9px] px-1 py-0.5 rounded-full font-semibold flex-shrink-0"
-                                          style={{
-                                            background: `${activeProv.color}22`,
-                                            color: activeProv.color,
-                                          }}
-                                        >
-                                          {model.tag}
-                                        </span>
-                                      )}
-                                    </div>
-                                    {isCurrent && (
-                                      <FiCheck
-                                        className="flex-shrink-0 ml-1 text-xs"
-                                        style={{ color: activeProv.color }}
-                                      />
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <button
-                suppressHydrationWarning={true}
-                type="button"
-                onClick={() => handleSaveMuapiSettings("muapi_model")}
-                className="px-3.5 py-2.5 rounded-xl border border-[#33333a] bg-[#222226] hover:bg-[#2c2c34] text-xs font-medium text-zinc-300 hover:text-white transition flex items-center gap-1 flex-shrink-0"
-              >
-                <FiCheck
-                  className={
-                    savedField === "muapi_model"
-                      ? "text-emerald-400"
-                      : "text-zinc-400"
-                  }
-                />
-                <span>{savedField === "muapi_model" ? "Saved" : "Save"}</span>
-              </button>
-            </div>
           </div>
         </div>
       </div>

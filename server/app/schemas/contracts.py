@@ -1,13 +1,15 @@
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
 
+from app.config import settings
+
 class Bot(BaseModel):
     id: str
     name: str
     role: str
     description: str
     avatar: str
-    model: str = "grok-4-5"
+    model: str = Field(default_factory=lambda: settings.DEFAULT_MODEL)
     accent_color: str = "cyan"
     system_prompt: str
     tools: List[str] = []
@@ -72,15 +74,35 @@ class ModelInfo(BaseModel):
     id: str
     name: str
     provider: str
-    description: str
+    description: str = ""
     recommended: bool = False
     is_available: bool = True
+    # None means the server did not say. OpenRouter advertises both; Ollama,
+    # LM Studio and llama.cpp currently advertise neither.
+    supports_reasoning: Optional[bool] = None
+    supports_vision: Optional[bool] = None
+    context_length: Optional[int] = None
+
+
+class ModelCatalog(BaseModel):
+    provider: str
+    base_url: str
+    source: Literal["remote", "static", "fallback"]
+    error: Optional[str] = None
+    models: List[ModelInfo] = []
 
 class AppSettingsSchema(BaseModel):
-    muapi_api_key: str = Field(default="", json_schema_extra={"writeOnly": True})
-    muapi_base_url: str = "https://api.muapi.ai/api/v1"
+    llm_provider: Literal["openai_compatible", "muapi"] = Field(
+        default_factory=lambda: settings.LLM_PROVIDER
+    )
+    llm_api_key: str = Field(default="", json_schema_extra={"writeOnly": True})
+    # Empty means "use the provider's default base URL".
+    llm_base_url: str = ""
+    # Empty means "do not send reasoning_effort". Any short token is accepted
+    # and forwarded; the server decides whether it understands it.
+    llm_reasoning_effort: str = Field(default="", pattern=r"^[A-Za-z0-9_-]{0,32}$")
     composio_api_key: str = Field(default="", json_schema_extra={"writeOnly": True})
-    muapi_api_key_configured: bool = False
+    llm_api_key_configured: bool = False
     composio_api_key_configured: bool = False
-    default_model: str = "grok-4-5"
+    default_model: str = Field(default_factory=lambda: settings.DEFAULT_MODEL)
     theme: str = "dark"

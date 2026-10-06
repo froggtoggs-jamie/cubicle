@@ -120,27 +120,53 @@ class StorageServiceTests(unittest.TestCase):
         self.assertEqual(reopened.get_settings()["muapi_api_key"], legacy_secret)
 
     def test_settings_routes_never_return_provider_credentials(self):
-        self.service.save_settings({"muapi_api_key": "route-secret"})
+        self.service.save_settings({"llm_api_key": "route-secret"})
         original_storage = settings_router.storage_service
         settings_router.storage_service = self.service
         try:
             fetched = asyncio.run(settings_router.get_settings())
-            self.assertEqual(fetched.muapi_api_key, "")
-            self.assertTrue(fetched.muapi_api_key_configured)
+            self.assertEqual(fetched.llm_api_key, "")
+            self.assertTrue(fetched.llm_api_key_configured)
 
             saved = asyncio.run(
                 settings_router.save_settings(
                     AppSettingsSchema(
-                        muapi_api_key="",
-                        muapi_base_url="https://example.test/api/v1",
+                        llm_api_key="",
+                        llm_base_url="http://localhost:11434/v1",
+                        llm_reasoning_effort="high",
                     )
                 )
             )
-            self.assertEqual(saved.muapi_api_key, "")
-            self.assertTrue(saved.muapi_api_key_configured)
-            self.assertEqual(self.service.get_settings()["muapi_api_key"], "route-secret")
+            self.assertEqual(saved.llm_api_key, "")
+            self.assertTrue(saved.llm_api_key_configured)
+            self.assertEqual(saved.llm_base_url, "http://localhost:11434/v1")
+            self.assertEqual(saved.llm_reasoning_effort, "high")
+            self.assertEqual(self.service.get_settings()["llm_api_key"], "route-secret")
         finally:
             settings_router.storage_service = original_storage
+
+    def test_saved_muapi_key_is_migrated_to_provider_neutral_settings(self):
+        # A database written before the provider abstraction only has the
+        # muapi_* keys. The owner was clearly using MUAPI, so they stay on it.
+        self.service.save_settings(
+            {"muapi_api_key": "legacy-secret", "muapi_base_url": "https://example.test/api/v1"}
+        )
+        with self.service.database.connect() as connection:
+            connection.execute(
+                "DELETE FROM storage_meta WHERE key = 'llm_settings_migrated'"
+            )
+
+        migrated = StorageService(self.root).get_settings()
+        self.assertEqual(migrated["llm_provider"], "muapi")
+        self.assertEqual(migrated["llm_api_key"], "legacy-secret")
+        self.assertEqual(migrated["llm_base_url"], "https://example.test/api/v1")
+
+    def test_fresh_install_defaults_to_openai_compatible_and_does_not_migrate(self):
+        fresh = StorageService(self.root / "fresh")
+        public = fresh.get_public_settings()
+        self.assertEqual(public["llm_provider"], "openai_compatible")
+        self.assertFalse(public["llm_api_key_configured"])
+        self.assertEqual(fresh.database.get_meta("llm_settings_migrated"), "1")
 
     def test_schema_one_is_upgraded_with_owner_columns(self):
         upgrade_root = self.root / "schema-one"

@@ -76,14 +76,20 @@ export async function deleteBot(botId) {
   return res.json();
 }
 
-export async function fetchModels() {
+const EMPTY_CATALOG = { provider: '', base_url: '', source: 'fallback', error: null, models: [] };
+
+// Returns { provider, base_url, source, error, models }. `refresh` bypasses
+// the server-side cache after the connection settings change.
+export async function fetchModels(refresh = false) {
   try {
-    const res = await apiFetch(`${API_BASE_URL}/models`);
-    if (!res.ok) return [];
-    return await res.json();
+    const res = await apiFetch(`${API_BASE_URL}/models${refresh ? '?refresh=true' : ''}`);
+    if (!res.ok) return { ...EMPTY_CATALOG, error: `Model catalog request failed (HTTP ${res.status}).` };
+    const data = await res.json();
+    if (Array.isArray(data)) return { ...EMPTY_CATALOG, source: 'remote', models: data };
+    return { ...EMPTY_CATALOG, ...data, models: Array.isArray(data?.models) ? data.models : [] };
   } catch (err) {
     console.warn('Models catalog API offline:', err);
-    return [];
+    return { ...EMPTY_CATALOG, error: 'The API server is offline or unreachable.' };
   }
 }
 
@@ -98,7 +104,7 @@ export async function fetchChatHistory(threadId) {
   }
 }
 
-export async function sendMessage(threadId, botId, text, model = 'grok-4-5', imageUrl = null) {
+export async function sendMessage(threadId, botId, text, model = null, imageUrl = null) {
   try {
     const res = await apiFetch(`${API_BASE_URL}/chat/send`, {
       method: 'POST',

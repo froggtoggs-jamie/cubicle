@@ -1,6 +1,6 @@
 # Open Grok Bot
 
-A local-first AI workspace for creating bot personas, chatting with models exposed through MUAPI, and keeping conversations on your machine. The interface is built with Next.js and React; the API is built with FastAPI and Python.
+A local-first AI workspace for creating bot personas, chatting with models from any OpenAI-compatible server (OpenRouter, Ollama, LM Studio, llama.cpp, vLLM, or the OpenAI API), and keeping conversations on your machine. The interface is built with Next.js and React; the API is built with FastAPI and Python.
 
 This is an independent open-source project and is not affiliated with xAI.
 
@@ -10,9 +10,9 @@ This is an independent open-source project and is not affiliated with xAI.
 
 ## Related Projects
 
-- [MuAPI](https://muapi.ai) — Unified API used by this workspace for model responses and image uploads.
-- [MuAPI API reference](https://muapi.ai/docs/api-reference) — Endpoint and prediction lifecycle documentation for the provider service.
-- [MuAPI access keys](https://muapi.ai/access-keys) — Create the API key used by the live-model configuration.
+- [OpenRouter](https://openrouter.ai) — Default hosted provider; one key for hundreds of models behind an OpenAI-compatible API.
+- [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), [llama.cpp server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server) — Local servers that expose the same API and work without a key.
+- [MuAPI](https://muapi.ai) — The original provider, still supported as the legacy `muapi` option ([API reference](https://muapi.ai/docs/api-reference), [access keys](https://muapi.ai/access-keys)).
 - [awesome-meta-muse-agent](https://github.com/Anil-matcha/awesome-meta-muse-agent) — copy-paste Muse agent briefs for practical workflows, connectors, and approval boundaries.
 - [awesome-grok-bot](https://github.com/Anil-matcha/awesome-grok-bot) — curated bot templates for productivity, sales, marketing, operations, and personal workflows.
 - [awesome-gpt-6-astra](https://github.com/Anil-matcha/awesome-gpt-6-astra) — evidence-backed model workflows, prompts, evaluations, and safety notes.
@@ -20,14 +20,15 @@ This is an independent open-source project and is not affiliated with xAI.
 ## What it does
 
 - **Bot personas:** Create, edit, and switch between bots with their own role, system prompt, model, and visual identity.
-- **Model picker:** Select model IDs from the catalog exposed by the FastAPI service. The default model is `grok-4-5`.
-- **SSE chat:** Send a message, persist it locally, and receive `turn.started`, `content.delta`, and `turn.completed` events over Server-Sent Events.
-- **Image attachments:** Upload JPEG, PNG, WEBP, GIF, or AVIF images. The backend sends them to the configured provider when possible and falls back to a local data URL for previews.
+- **Model picker:** Search the live model list reported by your server, or type any model ID. Models that advertise reasoning or vision support are tagged. The default model is `x-ai/grok-4.5` on OpenRouter.
+- **SSE chat:** Send a message, persist it locally, and receive `turn.started`, `content.delta`, and `turn.completed` events over Server-Sent Events. Tokens are streamed from the model as they are generated.
+- **Image attachments:** Upload JPEG, PNG, WEBP, GIF, or AVIF images. They are sent inline to vision-capable models as data URLs, so the image never leaves your machine except as part of the model request.
 - **Markdown messages:** Render assistant replies as Markdown in the chat transcript.
+- **Visible thinking:** Reasoning models' thinking (`reasoning_content` or `reasoning` in the stream) is shown live in a collapsible block above the reply. It is stored for display but never replayed to the model.
 - **Voice dictation:** Use the browser's Web Speech API when the browser supports it.
 - **Approved workspace tools:** Explicit `/workspace list`, `/workspace read`, and `/workspace write` requests pause for user approval, stay inside `WORKSPACE_ROOT`, and produce audit events.
 - **Governed action gateway:** Workspace actions use a structured request/result contract, a deny-by-default registry, approval state, and redacted lifecycle audit records.
-- **Settings drawer:** Configure the MUAPI key, provider base URL, default model, Composio key, and local profile details.
+- **Settings drawer:** Choose the provider, base URL, API key, default model, optional `reasoning_effort`, Composio key, and local profile details.
 - **Connector surface:** Browse a curated or live Composio app catalog, inspect connection status, and start OAuth authorization explicitly from Marketplace.
 - **Read-only GitHub action:** After connecting GitHub, run an explicit issue lookup from chat and pass its structured result through the action gateway.
 - **Approval-gated GitHub write:** Propose a GitHub issue from chat, inspect the repository/title/body-size preview, approve it, and receive a normalized issue result.
@@ -40,7 +41,7 @@ This is an independent open-source project and is not affiliated with xAI.
 
 - Node.js and npm
 - Python and pip
-- A MUAPI API key for live model responses
+- Either an OpenRouter API key, or a local OpenAI-compatible server such as Ollama, LM Studio, or llama.cpp
 
 ### 1. Clone the repository
 
@@ -59,11 +60,29 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 
-export MUAPI_API_KEY="your_muapi_api_key"
+# OpenRouter (default base URL):
+export LLM_API_KEY="your_openrouter_api_key"
+
+# ...or a local server, no key needed. For example Ollama:
+# export LLM_BASE_URL="http://localhost:11434/v1"
+# export DEFAULT_MODEL="llama3.2"
+
 python run.py
 ```
 
 The API starts at `http://127.0.0.1:8000`.
+
+Everything above can also be set later from **App Settings → Model server** in the UI, which is the easier route when switching between a hosted provider and a local model. The provider presets there fill in the usual base URLs:
+
+| Server | Base URL |
+| --- | --- |
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| Ollama | `http://localhost:11434/v1` |
+| LM Studio | `http://localhost:1234/v1` |
+| llama.cpp server | `http://localhost:8080/v1` |
+| OpenAI | `https://api.openai.com/v1` |
+
+Any server that implements `POST /chat/completions` with `stream: true` works. If it also implements `GET /models`, the picker lists its models; otherwise type the model ID into the picker's search box.
 
 API documentation is available at:
 
@@ -112,10 +131,13 @@ The server reads these variables from the environment:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MUAPI_API_KEY` | empty | Provider credential used when no key is saved in local settings |
-| `MUAPI_BASE_URL` | `https://api.muapi.ai/api/v1` | Provider API base URL |
+| `LLM_PROVIDER` | `openai_compatible` | `openai_compatible` or the legacy `muapi` |
+| `LLM_API_KEY` | empty | Provider credential used when no key is saved in local settings. Optional for local servers |
+| `LLM_BASE_URL` | per provider | API base URL. Defaults to `https://openrouter.ai/api/v1` for `openai_compatible` and `https://api.muapi.ai/api/v1` for `muapi` |
+| `LLM_REASONING_EFFORT` | empty | When set it is sent verbatim as `reasoning_effort`. Common values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; which ones work depends on the server and model. Leave empty to let the server use its default |
+| `MUAPI_API_KEY`, `MUAPI_BASE_URL` | empty | Legacy names. When `LLM_PROVIDER` is unset and `MUAPI_API_KEY` is present, the provider defaults to `muapi` and these values are used |
 | `COMPOSIO_API_KEY` | empty | Optional connector credential used when no key is saved in local settings |
-| `DEFAULT_MODEL` | `grok-4-5` | Initial model used for new settings and bots |
+| `DEFAULT_MODEL` | `x-ai/grok-4.5` (`grok-4-5` for MUAPI) | Initial model used for new settings and bots |
 | `DATA_DIR` | per-user hidden app directory | SQLite database, migration copies, and local key location |
 | `APP_ENCRYPTION_KEY` | generated mode-0600 key in `DATA_DIR` | Optional Fernet key for encrypted provider credentials |
 | `APP_AUTH_TOKEN` | generated mode-0600 token in `DATA_DIR` | Bearer token for non-loopback API access |
@@ -136,7 +158,9 @@ The server reads these variables from the environment:
 | `HOST` | `127.0.0.1` | FastAPI bind address |
 | `PORT` | `8000` | FastAPI port |
 
-The selected model ID is appended to `MUAPI_BASE_URL`. The configured provider must expose the expected endpoint and response shape for that model.
+For `openai_compatible`, chat requests go to `{LLM_BASE_URL}/chat/completions` and the model list comes from `{LLM_BASE_URL}/models`. For `muapi`, the selected model ID is appended to the base URL and long requests are polled at `/predictions/{id}/result`.
+
+A key saved before the provider setting existed is migrated automatically: the database keeps using MUAPI with that key until you change the provider in App Settings.
 
 ## App surfaces
 
@@ -146,7 +170,7 @@ The selected model ID is appended to `MUAPI_BASE_URL`. The configured provider m
 | Computer | Bot-scoped provider lifecycle, screen metadata polling, and governed computer actions |
 | Marketplace | Searchable curated or live app catalog with explicit connect/disconnect actions |
 | Audit trail | Recent approval, workspace-tool, and connector events persisted by the local API |
-| App Settings | Local profile values and MUAPI connection/model settings |
+| App Settings | Local profile values, model server connection, default model, and reasoning effort |
 
 ## Architecture
 
@@ -155,8 +179,9 @@ Next.js client  ── HTTP + SSE ──▶  FastAPI server
                                      │
                  ┌───────────────────┼───────────────────┐
                  ▼                   ▼                   ▼
-           SQLite + key store     MUAPI API       Optional Composio
-           state/settings/audit   model + upload  connector endpoints
+           SQLite + key store   LLM provider        Optional Composio
+           state/settings/audit  OpenAI-compatible   connector endpoints
+                                 or legacy MUAPI
                                      │
                                      ▼
                          Computer provider
@@ -173,7 +198,10 @@ The main code areas are:
 | `client/lib/api.js` | HTTP and EventSource client functions |
 | `server/app/main.py` | FastAPI app, CORS, router registration, and health route |
 | `server/app/routers/` | Bots, chat, models, uploads, settings, approvals, connectors, and computers |
-| `server/app/services/muapi_service.py` | Provider requests, prediction polling, output parsing, and response events |
+| `server/app/services/llm_service.py` | Provider dispatch for chat streaming and the model catalog |
+| `server/app/services/llm_config.py` | Resolves provider, base URL, key, reasoning effort, and default model from env and saved settings |
+| `server/app/services/openai_compatible_service.py` | Streaming `/chat/completions` client and `/models` normalisation for OpenAI-compatible servers |
+| `server/app/services/muapi_service.py` | Legacy MUAPI requests, prediction polling, and the static MUAPI model registry |
 | `server/app/services/storage_service.py` | SQLite persistence, legacy import, secrets, and default data |
 | `server/app/services/database.py` | SQLite connection management and schema migrations |
 | `server/app/services/secret_store.py` | Fernet encryption for provider credentials |
@@ -198,7 +226,7 @@ The main code areas are:
 4. An explicit workspace or connector request becomes a structured action request and is checked against the deny-by-default gateway registry.
 5. The gateway pauses the stream for approval when required, then executes the registered action.
 6. The gateway emits normalized action lifecycle records; the client receives compatible tool events and the structured result.
-7. The server sends the selected model, recent history, and tool result to MUAPI.
+7. The server sends the system prompt, full conversation history, and tool result to the configured provider as an OpenAI-style `messages` array (MUAPI receives a flattened prompt instead).
 8. Provider output is forwarded as SSE deltas and the completed assistant message is persisted.
 
 ### Product direction
@@ -349,11 +377,21 @@ The API intentionally reports a failed Docker start instead of silently executin
 
 ### The chat returns a provider error
 
-Check the key in App Settings, verify `MUAPI_BASE_URL`, and make sure the selected model ID is supported by that provider endpoint.
+The error text from the server is shown in the chat as the reply. Common causes:
 
-### Image uploads do not produce a hosted URL
+- **HTTP 401 / 403:** the key is missing or wrong. Open App Settings → Model server and save a key.
+- **HTTP 404 on `/chat/completions`:** the base URL is wrong. For Ollama, LM Studio and llama.cpp it must end in `/v1`.
+- **Unknown or unloaded model:** the model ID is not one the server offers. Use the picker's refresh button to reload the list, or load the model in your local server first.
+- **Unrecognized argument `reasoning_effort`:** the server or model does not accept it. Set Reasoning effort back to "Not sent" in App Settings.
+- **Could not reach ...:** the server is not running or is not listening on that host and port.
 
-The backend falls back to a base64 data URL for local previews when no usable provider key is configured or the provider upload request fails.
+### The model picker is empty or shows only the default model
+
+The server did not answer `GET /models`. The picker still accepts a typed model ID, so search for the ID you want and choose "Use ... as the model ID".
+
+### Images are ignored by the model
+
+Images are sent as OpenAI-style `image_url` parts. The selected model must support image input; on OpenRouter such models are tagged "Vision" in the picker. For local servers choose a vision model such as a LLaVA or Qwen-VL variant.
 
 ## Contributing
 

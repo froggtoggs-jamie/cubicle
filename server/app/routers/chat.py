@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from app.schemas.contracts import TurnRequest, Message
 from app.services.storage_service import storage_service
-from app.services.muapi_service import muapi_service
+from app.services import llm_service
 from app.services.action_gateway import (
     ActionGatewayError,
     ActionPolicyError,
@@ -37,7 +37,7 @@ async def send_message(req: TurnRequest):
         "text": req.user_text,
         "image_url": req.image_url,
         "created_at": datetime.now().isoformat(),
-        "model": req.model or "grok-4-5",
+        "model": req.model or llm_service.current_llm_config().default_model,
         "item_type": "user_text"
     }
 
@@ -45,7 +45,7 @@ async def send_message(req: TurnRequest):
     return {"status": "ok", "message": user_msg}
 
 @router.get("/stream/{thread_id}")
-async def stream_turn(thread_id: str, model: Optional[str] = Query("grok-4-5")):
+async def stream_turn(thread_id: str, model: Optional[str] = Query(None)):
     """
     SSE stream endpoint broadcasting real-time tokens & tool events for a given thread.
     """
@@ -56,7 +56,12 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query("grok-4-5")):
     raw_prompt = current_bot["system_prompt"] if current_bot else "You are a helpful AI assistant."
     current_time_str = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
     system_prompt = f"Current Date & Time: {current_time_str}.\n\n{raw_prompt}"
-    selected_model = model or (current_bot["model"] if current_bot else "grok-4-5")
+    llm_config = llm_service.current_llm_config()
+    selected_model = (
+        model
+        or (current_bot.get("model") if current_bot else None)
+        or llm_config.default_model
+    )
 
     formatted_history = []
     for m in history:
@@ -71,6 +76,9 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query("grok-4-5")):
     async def event_generator():
         bot_msg_id = f"msg-{uuid.uuid4().hex[:6]}"
         accumulated_text = ""
+        # Thinking is shown to the user and kept with the message for display,
+        # but it is never part of `text`, so it is not replayed to the model.
+        accumulated_reasoning = ""
         tool_context = ""
 
         # Emit turn started
@@ -201,15 +209,20 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query("grok-4-5")):
                         }),
                     }
 
+        # Use a new name here. Assigning to `system_prompt` inside this nested
+        # generator would make it local to the whole function and raise
+        # UnboundLocalError on the first read above.
+        turn_system_prompt = system_prompt
         if tool_context:
-            system_prompt = f"{system_prompt}\n\n{tool_context}"
+            turn_system_prompt = f"{system_prompt}\n\n{tool_context}"
 
-        # Stream content from MUAPI service
+        # Stream content from the configured LLM provider
         try:
-            async for event in muapi_service.stream_chat_completion(
+            async for event in llm_service.stream_chat_completion(
                 model=selected_model,
                 messages=formatted_history,
-                system_prompt=system_prompt
+                system_prompt=turn_system_prompt,
+                config=llm_config,
             ):
                 if event["type"] == "content.delta":
                     accumulated_text += event["delta"]
@@ -217,6 +230,16 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query("grok-4-5")):
                         "event": "message",
                         "data": json.dumps({
                             "type": "content.delta",
+                            "botMsgId": bot_msg_id,
+                            "delta": event["delta"]
+                        })
+                    }
+                elif event["type"] == "reasoning.delta":
+                    accumulated_reasoning += event["delta"]
+                    yield {
+                        "event": "message",
+                        "data": json.dumps({
+                            "type": "reasoning.delta",
                             "botMsgId": bot_msg_id,
                             "delta": event["delta"]
                         })
@@ -230,7 +253,10 @@ async def stream_turn(thread_id: str, model: Optional[str] = Query("grok-4-5")):
                         "text": accumulated_text,
                         "created_at": datetime.now().isoformat(),
                         "model": selected_model,
-                        "item_type": "assistant_text"
+                        "item_type": "assistant_text",
+                        "raw_payload": (
+                            {"reasoning": accumulated_reasoning} if accumulated_reasoning else None
+                        ),
                     }
                     storage_service.add_message(bot_msg)
                     yield {

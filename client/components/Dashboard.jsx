@@ -20,11 +20,12 @@ import {
 export default function Dashboard() {
   const [bots, setBots] = useState([]);
   const [models, setModels] = useState([]);
+  const [catalogError, setCatalogError] = useState(null);
   const [activeBotId, setActiveBotId] = useState('');
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'computer' | 'marketplace' | 'audit'
   const [messages, setMessages] = useState([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [defaultModel, setDefaultModel] = useState('grok-4-5');
+  const [defaultModel, setDefaultModel] = useState('');
   const [userName, setUserName] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('open_grok_user_name') || 'You';
@@ -36,9 +37,10 @@ export default function Dashboard() {
   useEffect(() => {
     async function initData() {
       try {
-        const [botsData, modelsData, settingsData] = await Promise.all([fetchBots(), fetchModels(), fetchSettings()]);
+        const [botsData, catalog, settingsData] = await Promise.all([fetchBots(), fetchModels(), fetchSettings()]);
         setBots(botsData);
-        setModels(modelsData);
+        setModels(catalog.models);
+        setCatalogError(catalog.error);
         if (settingsData?.default_model) {
           setDefaultModel(settingsData.default_model);
         }
@@ -51,6 +53,15 @@ export default function Dashboard() {
     }
     initData();
   }, []);
+
+  // Reload the model list, bypassing the server cache (used after the
+  // connection settings change or from the picker's refresh button).
+  const refreshModels = async () => {
+    const catalog = await fetchModels(true);
+    setModels(catalog.models);
+    setCatalogError(catalog.error);
+    return catalog;
+  };
 
   // Fetch chat history whenever active bot changes
   useEffect(() => {
@@ -79,14 +90,15 @@ export default function Dashboard() {
     const name = prompt('Enter Bot Name:', 'New Assistant');
     if (!name) return;
     const role = prompt('Enter Role:', 'General Intelligence');
-    const model = prompt('Enter Model (e.g. grok-4-5, claude-3-5-sonnet):', 'grok-4-5');
+    const model = prompt('Enter model ID (change it later from the chat header):', defaultModel || '');
+    const chosenModel = (model || defaultModel || '').trim();
 
     try {
       const newBot = await createBot({
         name,
         role: role || 'AI Assistant',
-        model: model || 'grok-4-5',
-        description: `Custom agent running model ${model || 'grok-4-5'} via MUAPI.`,
+        ...(chosenModel ? { model: chosenModel } : {}),
+        description: `Custom agent running ${chosenModel || 'the default model'}.`,
         avatar: '🤖',
         system_prompt: `You are ${name}, a helpful AI assistant.`
       });
@@ -121,6 +133,8 @@ export default function Dashboard() {
           <ChatWindow
             bot={activeBot}
             models={models}
+            catalogError={catalogError}
+            onRefreshModels={refreshModels}
             messages={messages}
             setMessages={setMessages}
             onUpdateBotModel={handleUpdateBotModel}
@@ -145,6 +159,13 @@ export default function Dashboard() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         currentModel={defaultModel}
+        models={models}
+        catalogError={catalogError}
+        onRefreshModels={refreshModels}
+        onConnectionSaved={async (saved) => {
+          if (saved?.default_model) setDefaultModel(saved.default_model);
+          await refreshModels();
+        }}
         onUpdateDefaultModel={(newModel) => {
           setDefaultModel(newModel);
           if (activeBotId) {

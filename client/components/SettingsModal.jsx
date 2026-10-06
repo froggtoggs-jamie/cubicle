@@ -1,24 +1,27 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { 
-  FiX, 
-  FiKey, 
-  FiGlobe, 
-  FiCpu, 
-  FiCheck, 
-  FiSave, 
-  FiLock, 
-  FiEye, 
+import {
+  FiX,
+  FiKey,
+  FiGlobe,
+  FiCpu,
+  FiCheck,
+  FiSave,
+  FiLock,
+  FiEye,
   FiEyeOff,
   FiChevronDown
 } from 'react-icons/fi';
 import { fetchSettings, saveSettings } from '../lib/api';
 
+// Compact credentials dialog. The sidebar uses AppSettingsDrawer; this stays
+// as a lightweight alternative that writes the same provider-neutral settings.
 export default function SettingsModal({ isOpen, onClose }) {
+  const [provider, setProvider] = useState('openai_compatible');
   const [apiKey, setApiKey] = useState('');
-  const [baseUrl, setBaseUrl] = useState('https://api.muapi.ai/api/v1');
-  const [defaultModel, setDefaultModel] = useState('grok-4-5');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [defaultModel, setDefaultModel] = useState('');
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -28,10 +31,11 @@ export default function SettingsModal({ isOpen, onClose }) {
       fetchSettings()
         .then((data) => {
           if (data) {
-            setApiKey(data.muapi_api_key || '');
-            setApiKeyConfigured(Boolean(data.muapi_api_key_configured));
-            setBaseUrl(data.muapi_base_url || 'https://api.muapi.ai/api/v1');
-            setDefaultModel(data.default_model || 'grok-4-5');
+            setProvider(data.llm_provider || 'openai_compatible');
+            setApiKey('');
+            setApiKeyConfigured(Boolean(data.llm_api_key_configured));
+            setBaseUrl(data.llm_base_url || '');
+            setDefaultModel(data.default_model || '');
           }
         })
         .catch(console.error);
@@ -44,13 +48,14 @@ export default function SettingsModal({ isOpen, onClose }) {
     e.preventDefault();
     try {
       const saved = await saveSettings({
-        muapi_api_key: apiKey,
-        muapi_base_url: baseUrl,
-        default_model: defaultModel,
+        llm_provider: provider,
+        llm_api_key: apiKey,
+        llm_base_url: baseUrl.trim(),
+        default_model: defaultModel.trim(),
         theme: 'dark'
       });
       setApiKey('');
-      setApiKeyConfigured(Boolean(saved?.muapi_api_key_configured));
+      setApiKeyConfigured(Boolean(saved?.llm_api_key_configured));
       setSavedSuccess(true);
       setTimeout(() => {
         setSavedSuccess(false);
@@ -60,6 +65,8 @@ export default function SettingsModal({ isOpen, onClose }) {
       console.error('Failed to save settings:', err);
     }
   };
+
+  const defaultBaseUrl = provider === 'muapi' ? 'https://api.muapi.ai/api/v1' : 'https://openrouter.ai/api/v1';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 select-none font-sans">
@@ -72,7 +79,7 @@ export default function SettingsModal({ isOpen, onClose }) {
             </div>
             <div>
               <h2 className="text-xs font-bold text-zinc-100 tracking-wide">App Settings & API Credentials</h2>
-              <p className="text-[11px] text-zinc-400 mt-0.5">Configure MUAPI keys & default model settings</p>
+              <p className="text-[11px] text-zinc-400 mt-0.5">Configure the model server, key & default model</p>
             </div>
           </div>
 
@@ -86,10 +93,29 @@ export default function SettingsModal({ isOpen, onClose }) {
         </div>
 
         <form onSubmit={handleSave} className="space-y-4">
-          {/* MUAPI API Key Field */}
+          {/* Provider */}
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-              <FiLock className="text-amber-400 text-xs" /> MUAPI API Key
+              <FiCpu className="text-emerald-400 text-xs" /> Provider
+            </label>
+            <div className="relative">
+              <select
+                suppressHydrationWarning={true}
+                value={provider}
+                onChange={(e) => setProvider(e.target.value)}
+                className="w-full rounded-full bg-[#1c202d] border border-[#2a3045] px-4 py-2 pr-10 text-xs text-zinc-100 font-sans focus:outline-none focus:border-blue-500 appearance-none cursor-pointer"
+              >
+                <option value="openai_compatible">OpenAI-compatible (OpenRouter, Ollama, LM Studio, llama.cpp…)</option>
+                <option value="muapi">MUAPI (legacy)</option>
+              </select>
+              <FiChevronDown className="absolute right-4 top-3 text-zinc-400 text-xs pointer-events-none" />
+            </div>
+          </div>
+
+          {/* API Key Field */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+              <FiLock className="text-amber-400 text-xs" /> API Key
             </label>
             <div className="relative">
               <input
@@ -97,7 +123,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                 type={showKey ? 'text' : 'password'}
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={apiKeyConfigured ? 'Stored securely — enter to replace' : 'Paste MUAPI API Key...'}
+                placeholder={apiKeyConfigured ? 'Stored securely — enter to replace' : 'Paste API key (optional for local servers)...'}
                 className="w-full rounded-full bg-[#1c202d] border border-[#2a3045] px-4 py-2 pr-10 text-xs text-zinc-100 placeholder-zinc-500 font-mono focus:outline-none focus:border-blue-500 transition"
               />
               <button
@@ -114,40 +140,34 @@ export default function SettingsModal({ isOpen, onClose }) {
             </p>
           </div>
 
-          {/* MUAPI Base Endpoint URL Field */}
+          {/* Base URL Field */}
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-              <FiGlobe className="text-blue-400 text-xs" /> MUAPI Base Endpoint URL
+              <FiGlobe className="text-blue-400 text-xs" /> Base URL
             </label>
             <input
               suppressHydrationWarning={true}
               type="text"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api.muapi.ai/api/v1"
+              placeholder={defaultBaseUrl}
               className="w-full rounded-full bg-[#1c202d] border border-[#2a3045] px-4 py-2 text-xs text-cyan-300 font-mono focus:outline-none focus:border-blue-500 transition"
             />
           </div>
 
-          {/* Default LLM Model Field */}
+          {/* Default Model Field */}
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-              <FiCpu className="text-purple-400 text-xs" /> Default LLM Model
+              <FiCpu className="text-purple-400 text-xs" /> Default model ID
             </label>
-            <div className="relative">
-              <select
-                suppressHydrationWarning={true}
-                value={defaultModel}
-                onChange={(e) => setDefaultModel(e.target.value)}
-                className="w-full rounded-full bg-[#1c202d] border border-[#2a3045] px-4 py-2 pr-10 text-xs text-zinc-100 font-sans focus:outline-none focus:border-blue-500 appearance-none cursor-pointer"
-              >
-                <option value="grok-4-5">grok-4-5 (Recommended — High Speed Reasoning)</option>
-                <option value="grok-3">grok-3 (xAI Reasoning Engine)</option>
-                <option value="claude-3-5-sonnet">claude-3-5-sonnet (Anthropic Code Master)</option>
-                <option value="gpt-4o">gpt-4o (OpenAI Multimodal Flagship)</option>
-              </select>
-              <FiChevronDown className="absolute right-4 top-3 text-zinc-400 text-xs pointer-events-none" />
-            </div>
+            <input
+              suppressHydrationWarning={true}
+              type="text"
+              value={defaultModel}
+              onChange={(e) => setDefaultModel(e.target.value)}
+              placeholder={provider === 'muapi' ? 'grok-4-5' : 'x-ai/grok-4.5'}
+              className="w-full rounded-full bg-[#1c202d] border border-[#2a3045] px-4 py-2 text-xs text-zinc-100 font-mono focus:outline-none focus:border-blue-500 transition"
+            />
           </div>
 
           {/* Footer Save Action Buttons */}

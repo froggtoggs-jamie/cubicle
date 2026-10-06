@@ -5,10 +5,11 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.routers import auth, bots, models, chat, approvals, upload, settings as settings_router, connectors, audit, computers
 from app.services.auth_service import auth_service
+from app.services.llm_service import current_llm_config
 
 app = FastAPI(
     title="Open Grok Bot API",
-    description="FastAPI backend for Open Grok Bot powered by MUAPI LLM endpoints",
+    description="FastAPI backend for Open Grok Bot. Talks to any OpenAI-compatible LLM server (OpenRouter, Ollama, LM Studio, llama.cpp, vLLM) or the legacy MUAPI API.",
     version="1.0.0"
 )
 
@@ -64,10 +65,12 @@ app.include_router(computers.router)
 
 @app.get("/api/v1/health")
 async def health_check():
+    llm_config = current_llm_config()
     return {
         "status": "online",
         "service": "Open Grok Bot FastAPI Backend",
-        "provider": "MUAPI API Endpoints",
+        "provider": llm_config.provider,
+        "provider_base_url": llm_config.base_url,
         "computer_provider": settings.COMPUTER_PROVIDER,
-        "default_model": "grok-4-5"
+        "default_model": llm_config.default_model,
     }

@@ -35,11 +35,11 @@ function formatHeaderDate(msgs) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function ChatWindow({ bot, models, messages, setMessages, onUpdateBotModel, onToggleComputer, defaultModel }) {
+export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessages, onUpdateBotModel, onToggleComputer, defaultModel }) {
   const [inputPrompt, setInputPrompt] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [activeModel, setActiveModel] = useState(bot?.model || defaultModel || 'grok-4-5');
+  const [activeModel, setActiveModel] = useState(bot?.model || defaultModel || '');
   const [selectedImage, setSelectedImage] = useState(null);
   const [pendingApprovals, setPendingApprovals] = useState([]);
   const [toolEvents, setToolEvents] = useState([]);
@@ -53,7 +53,7 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
     {
       id: 'msg-intro',
       sender: 'bot',
-      text: `Hello! I am **${botTitle}**, running via MUAPI endpoints. Ask me anything, or give me a task to analyze!`,
+      text: `Hello! I am **${botTitle}**. Ask me anything, or give me a task to analyze!`,
       isError: false,
     },
   ];
@@ -121,7 +121,7 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
 
     let finalImageUrl = currentSelected?.uploadedUrl || null;
 
-    // Ensure image upload finishes before dispatching to backend/MUAPI
+    // Ensure image upload finishes before dispatching to the backend
     if (currentSelected && !finalImageUrl) {
       try {
         const res = await uploadImage(currentSelected.file);
@@ -159,6 +159,8 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
                   id: streamingMsgId,
                   sender: 'bot',
                   text: '',
+                  reasoning: '',
+                  isStreaming: true,
                   created_at: new Date().toISOString(),
                 },
               ]);
@@ -183,7 +185,20 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
                     : msg
                 )
               );
+            } else if (event.type === 'reasoning.delta') {
+              // The model's thinking. Shown in a collapsible block, never
+              // merged into the answer text.
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === streamingMsgId
+                    ? { ...msg, reasoning: (msg.reasoning || '') + event.delta }
+                    : msg
+                )
+              );
             } else if (event.type === 'turn.completed') {
+              setMessages((prev) =>
+                prev.map((msg) => (msg.id === streamingMsgId ? { ...msg, isStreaming: false } : msg))
+              );
               setIsStreaming(false);
             }
           },
@@ -241,6 +256,8 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
           <ModelPicker
             currentModel={activeModel}
             models={models}
+            catalogError={catalogError}
+            onRefresh={onRefreshModels}
             onSelectModel={handleModelChange}
           />
 

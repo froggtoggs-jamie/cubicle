@@ -1,3 +1,7 @@
+# Build context is the repository root (see docker-compose.yml) so the
+# runtime's seccomp profile can be included alongside the API.
+FROM docker:28-cli AS docker-cli
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -5,11 +9,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt ./
+COPY server/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
-COPY run.py ./
+# Docker CLI for the optional computer runtime. It only ever talks to the
+# daemon named by DOCKER_HOST (the socket proxy in compose); no socket is
+# mounted into this image.
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+
+COPY server/app ./app
+COPY server/run.py ./
+COPY runtime/seccomp_profile.json ./runtime/seccomp_profile.json
 
 # Persistent state lives in /data (SQLite, encryption key, auth token) and the
 # bots' confined workspace in /workspace. Both are volumes in docker-compose.
@@ -22,7 +32,8 @@ ENV HOST=0.0.0.0 \
     PORT=8000 \
     DATA_DIR=/data \
     WORKSPACE_ROOT=/workspace \
-    COMPUTER_PROVIDER=fake
+    COMPUTER_PROVIDER=fake \
+    COMPUTER_DOCKER_SECCOMP_PROFILE=/app/runtime/seccomp_profile.json
 
 EXPOSE 8000
 

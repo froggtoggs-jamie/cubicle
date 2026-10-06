@@ -107,6 +107,108 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(screen["frame_id"], "frame-real-1")
         self.assertEqual(self.provider.describe("bot-test").frame_id, "frame-real-1")
 
+    async def test_network_mode_joins_a_docker_network_instead_of_publishing(self):
+        provider = DockerComputerProvider(
+            image="open-grok-bot-computer:test",
+            workspace_root=self.root / "computers",
+            seccomp_profile=self.root / "missing-seccomp.json",
+            start_timeout=0.5,
+            network="open-grok-bot-computers",
+            docker_command=self.docker,
+        )
+        status = provider.get_or_create("bot-net")
+
+        async def ready(_record):
+            return {"status": "healthy"}
+
+        provider._wait_until_ready = ready
+        await provider.start(status.computer_id)
+
+        run_args = self.docker.calls[0][0]
+        self.assertIn("--network", run_args)
+        self.assertIn("open-grok-bot-computers", run_args)
+        self.assertNotIn("--publish", run_args)
+        self.assertNotIn("port", [call[0][0] for call in self.docker.calls])
+
+        record = provider._runtimes[status.computer_id]
+        self.assertEqual(record.host, f"open-grok-computer-{status.computer_id[-70:]}")
+        self.assertEqual(record.port, 3000)
+        self.assertEqual(
+            provider._runtime_url(record, "/health"),
+            f"http://open-grok-computer-{status.computer_id[-70:]}:3000/health",
+        )
+
+        await provider.stop(status.computer_id)
+        self.assertIsNone(record.host)
+        self.assertIsNone(record.port)
+
+    async def test_publish_mode_connects_to_loopback_port(self):
+        status = self.provider.get_or_create("bot-test")
+
+        async def ready(_record):
+            return {"status": "healthy"}
+
+        self.provider._wait_until_ready = ready
+        await self.provider.start(status.computer_id)
+        record = self.provider._runtimes[status.computer_id]
+        self.assertEqual(record.host, "127.0.0.1")
+        self.assertEqual(record.port, 45678)
+        self.assertEqual(
+            self.provider._runtime_url(record, "/screenshot"), "http://127.0.0.1:45678/screenshot"
+        )
+
+    async def test_volume_workspace_mode_mounts_a_named_volume(self):
+        provider = DockerComputerProvider(
+            image="open-grok-bot-computer:test",
+            workspace_root=self.root / "computers",
+            seccomp_profile=self.root / "missing-seccomp.json",
+            start_timeout=0.5,
+            workspace_mode="volume",
+            docker_command=self.docker,
+        )
+        status = provider.get_or_create("bot-vol")
+
+        async def ready(_record):
+            return {"status": "healthy"}
+
+        provider._wait_until_ready = ready
+        await provider.start(status.computer_id)
+
+        run_args = self.docker.calls[0][0]
+        mount = run_args[run_args.index("--mount") + 1]
+        self.assertEqual(
+            mount, f"type=volume,src=open-grok-computer-ws-{status.computer_id[-60:]},dst=/workspace"
+        )
+
+    async def test_bind_mode_translates_to_the_host_path_when_configured(self):
+        provider = DockerComputerProvider(
+            image="open-grok-bot-computer:test",
+            workspace_root=self.root / "computers",
+            seccomp_profile=self.root / "missing-seccomp.json",
+            start_timeout=0.5,
+            host_workspace_root="/srv/open-grok-bot/computers",
+            docker_command=self.docker,
+        )
+        status = provider.get_or_create("bot-bind")
+
+        async def ready(_record):
+            return {"status": "healthy"}
+
+        provider._wait_until_ready = ready
+        await provider.start(status.computer_id)
+
+        run_args = self.docker.calls[0][0]
+        mount = run_args[run_args.index("--mount") + 1]
+        self.assertTrue(mount.startswith("type=bind,src="))
+        self.assertIn(status.computer_id, mount)
+        self.assertIn("open-grok-bot", mount.replace("\\", "/"))
+        self.assertNotIn(str(self.root), mount)
+        self.assertTrue(mount.endswith(",dst=/workspace"))
+
+    def test_unknown_workspace_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            DockerComputerProvider(workspace_root=self.root / "computers", workspace_mode="nfs")
+
     async def test_docker_failure_is_reported_and_marks_runtime_unhealthy(self):
         def failing_docker(_args, _timeout):
             raise ComputerProviderError("Docker daemon is unavailable.")

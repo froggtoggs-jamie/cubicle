@@ -1,9 +1,15 @@
 """Docker-backed Playwright computer provider.
 
 Each bot receives one short-lived container with a private browser context,
-one writable workspace mount, a loopback-only ephemeral port, and an internal
-token. The host API is the only component that knows the token or container
-id; callers continue to use the provider-neutral computer contract.
+one writable workspace mount, and an internal token. The host API is the only
+component that knows the token or container id; callers continue to use the
+provider-neutral computer contract.
+
+Two connection layouts are supported. When the API runs directly on the Docker
+host, each container publishes an ephemeral port on 127.0.0.1. When the API is
+itself a container (docker compose), `COMPUTER_DOCKER_NETWORK` names a Docker
+network that runtime containers join, and they are reached by container name
+without publishing any port.
 """
 
 from __future__ import annotations
@@ -42,7 +48,9 @@ class _RuntimeRecord:
     token: str
     workspace: Path
     container_id: Optional[str] = None
+    host: Optional[str] = None
     port: Optional[int] = None
+    volume: Optional[str] = None
 
 
 class DockerComputerProvider:
@@ -63,6 +71,9 @@ class DockerComputerProvider:
         command_timeout: Optional[float] = None,
         runtime_port: Optional[int] = None,
         seccomp_profile: Optional[Path] = None,
+        network: Optional[str] = None,
+        workspace_mode: Optional[str] = None,
+        host_workspace_root: Optional[str] = None,
         docker_command: Optional[DockerCommand] = None,
     ):
         self.docker_binary = docker_binary or settings.COMPUTER_DOCKER_BINARY
@@ -75,6 +86,16 @@ class DockerComputerProvider:
         self.command_timeout = command_timeout or settings.COMPUTER_DOCKER_COMMAND_TIMEOUT
         self.runtime_port = runtime_port or settings.COMPUTER_DOCKER_RUNTIME_PORT
         self.seccomp_profile = (seccomp_profile or settings.COMPUTER_DOCKER_SECCOMP_PROFILE).expanduser().resolve()
+        self.network = (network if network is not None else settings.COMPUTER_DOCKER_NETWORK).strip()
+        mode = (workspace_mode or settings.COMPUTER_DOCKER_WORKSPACE_MODE or "bind").strip().lower()
+        if mode not in {"bind", "volume"}:
+            raise ValueError(f"Unsupported computer workspace mode: {mode}")
+        self.workspace_mode = mode
+        self.host_workspace_root = (
+            host_workspace_root
+            if host_workspace_root is not None
+            else settings.COMPUTER_DOCKER_HOST_WORKSPACE_ROOT
+        ).strip()
         self._docker_command = docker_command or self._run_docker
         self._runtimes: Dict[str, _RuntimeRecord] = {}
         self._lock = asyncio.Lock()
@@ -122,6 +143,7 @@ class DockerComputerProvider:
             status=status,
             token=secrets.token_urlsafe(32),
             workspace=workspace,
+            volume=self._volume_name(computer_id) if self.workspace_mode == "volume" else None,
         )
         return status
 
@@ -137,7 +159,7 @@ class DockerComputerProvider:
             raise ComputerProviderError(
                 f"Computer is not active; current state is {record.status.state}."
             )
-        if not record.container_id or not record.port:
+        if not record.container_id or not record.port or not record.host:
             raise ComputerProviderError("Computer runtime connection is unavailable.")
         return record
 
@@ -172,6 +194,29 @@ class DockerComputerProvider:
     def _container_name(self, record: _RuntimeRecord) -> str:
         return f"open-grok-computer-{record.status.computer_id[-70:]}"
 
+    @staticmethod
+    def _volume_name(computer_id: str) -> str:
+        return f"open-grok-computer-ws-{computer_id[-60:]}"
+
+    def _network_args(self) -> list:
+        if self.network:
+            return ["--network", self.network]
+        return ["--publish", f"127.0.0.1::{self.runtime_port}"]
+
+    def _workspace_mount(self, record: _RuntimeRecord) -> str:
+        if self.workspace_mode == "volume":
+            return f"type=volume,src={record.volume},dst=/workspace"
+        source = record.workspace
+        if self.host_workspace_root:
+            # The daemon resolves bind sources on the host, so translate the
+            # path the API sees into the equivalent host path.
+            source = Path(self.host_workspace_root) / record.workspace.name
+        return f"type=bind,src={source},dst=/workspace"
+
+    @staticmethod
+    def _runtime_url(record: _RuntimeRecord, route: str) -> str:
+        return f"http://{record.host}:{record.port}{route}"
+
     async def _launch(self, record: _RuntimeRecord) -> None:
         record.workspace.mkdir(parents=True, exist_ok=True)
         args = [
@@ -187,15 +232,14 @@ class DockerComputerProvider:
             f"open-grok-bot.computer-id={record.status.computer_id}",
             "--label",
             f"open-grok-bot.bot-id={record.status.bot_id}",
-            "--publish",
-            f"127.0.0.1::{self.runtime_port}",
+            *self._network_args(),
             "--read-only",
             "--tmpfs",
             "/tmp:rw,nosuid,size=512m",
             "--tmpfs",
             "/home/pwuser:rw,nosuid,size=1g",
             "--mount",
-            f"type=bind,src={record.workspace},dst=/workspace",
+            self._workspace_mount(record),
             "--cpus",
             self.cpu_limit,
             "--memory",
@@ -229,14 +273,23 @@ class DockerComputerProvider:
             raise ComputerProviderError("Docker did not return a computer container id.")
         record.container_id = container_id
 
+        if self.network:
+            # On a user-defined network the container name resolves through
+            # Docker's embedded DNS, so nothing is published.
+            record.host = self._container_name(record)
+            record.port = self.runtime_port
+            return
+
         ports = await self._docker(["port", container_id, f"{self.runtime_port}/tcp"])
         matches = re.findall(r":(\d+)", ports)
         if not matches:
             raise ComputerProviderError("Docker did not publish a computer runtime port.")
+        record.host = "127.0.0.1"
         record.port = int(matches[-1])
 
     async def _remove_container(self, record: _RuntimeRecord, suppress_errors: bool = True) -> None:
         if not record.container_id:
+            record.host = None
             record.port = None
             return
         container_id = record.container_id
@@ -247,6 +300,7 @@ class DockerComputerProvider:
                 raise
         finally:
             record.container_id = None
+            record.host = None
             record.port = None
 
     async def _request(
@@ -256,9 +310,9 @@ class DockerComputerProvider:
         route: str,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        if not record.port:
+        if not record.port or not record.host:
             raise ComputerProviderError("Computer runtime is not connected.")
-        url = f"http://127.0.0.1:{record.port}{route}"
+        url = self._runtime_url(record, route)
         try:
             async with httpx.AsyncClient(
                 timeout=max(2.0, min(self.command_timeout, 60.0)),

@@ -57,6 +57,17 @@ class Settings:
         os.getenv("COMPUTER_DOCKER_COMMAND_TIMEOUT", "30")
     )
     COMPUTER_DOCKER_RUNTIME_PORT: int = int(os.getenv("COMPUTER_DOCKER_RUNTIME_PORT", "3000"))
+    # When the API itself runs in a container (docker compose), runtime
+    # containers join this Docker network and are reached by name instead of
+    # through a port published on the host's loopback.
+    COMPUTER_DOCKER_NETWORK: str = os.getenv("COMPUTER_DOCKER_NETWORK", "").strip()
+    # "bind" mounts a host directory per computer; "volume" uses a named Docker
+    # volume per computer, which works wherever the API cannot see host paths.
+    COMPUTER_DOCKER_WORKSPACE_MODE: str = os.getenv("COMPUTER_DOCKER_WORKSPACE_MODE", "bind").strip().lower()
+    # In bind mode from inside a container: the host path that corresponds to
+    # COMPUTER_DOCKER_WORKSPACE_ROOT, because the daemon resolves mount sources
+    # on the host.
+    COMPUTER_DOCKER_HOST_WORKSPACE_ROOT: str = os.getenv("COMPUTER_DOCKER_HOST_WORKSPACE_ROOT", "").strip()
     COMPUTER_DOCKER_SECCOMP_PROFILE: Path = Path(
         os.getenv(
             "COMPUTER_DOCKER_SECCOMP_PROFILE",

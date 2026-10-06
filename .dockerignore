@@ -1,0 +1,19 @@
+# Root build context for server/Dockerfile. The client image uses client/ as
+# its own context with client/.dockerignore.
+.git/
+client/
+server/.venv/
+server/venv/
+server/tests/
+**/__pycache__/
+**/*.pyc
+workspace/
+deploy/
+docs/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+.encryption.key
+.auth-token
+.env
+.env.*

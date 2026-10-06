@@ -143,7 +143,22 @@ HTTPS is what makes voice dictation work from another machine, since browsers on
 
 **Workspace.** `WORKSPACE_DIR` (default `./workspace`) is mounted as the directory the approved workspace tools can read and write. Point it at a project directory on the Docker host to let bots work on real files there.
 
-**What the compose layout does not include yet.** The computer provider runs the `fake` adapter. The Docker/Playwright runtime needs the API to control the host's Docker daemon, which is a separate, more privileged setup and is documented as follow-up work.
+**Computer runtime (optional).** The compose stack can also run the Docker/Playwright computer runtime. It is off by default because it requires the API to control the host's Docker daemon. To enable it, set these two lines in `.env` and bring the stack up again:
+
+```bash
+COMPUTER_PROVIDER=docker
+COMPOSE_PROFILES=computer
+```
+
+This builds the runtime image and starts a `docker-socket-proxy` sidecar on an internal-only network. The API never sees the Docker socket; it talks to the proxy, which only permits the container operations the provider uses (create, start, pause, kill, inspect images). Runtime containers join a dedicated `open-grok-bot-computers` network and are reached by name, so no ports are published for them. Each computer gets a named Docker volume as its workspace. To use a host directory instead, set `COMPUTER_DOCKER_WORKSPACE_MODE=bind` and `COMPUTER_DOCKER_HOST_WORKSPACE_ROOT` to the host path that you also bind-mount at `/data/computers` in the API service.
+
+Runtime containers are started by the API, not by compose, so `docker compose down` does not remove any that are still running. Stop computers from the UI first, or remove them by label:
+
+```bash
+docker rm -f $(docker ps -q --filter label=open-grok-bot.runtime=computer)
+```
+
+The security caveats from the [Optional Docker computer runtime](#optional-docker-computer-runtime) section apply unchanged.
 
 ## Configuration
 
@@ -178,6 +193,9 @@ The server reads these variables from the environment:
 | `COMPUTER_DOCKER_PIDS_LIMIT` | `512` | Maximum processes per computer |
 | `COMPUTER_DOCKER_START_TIMEOUT` | `20` | Runtime readiness timeout in seconds |
 | `COMPUTER_DOCKER_COMMAND_TIMEOUT` | `30` | Docker/driver operation timeout in seconds |
+| `COMPUTER_DOCKER_NETWORK` | empty | When set, runtime containers join this Docker network and are reached by name instead of a port published on loopback. Used by the compose stack |
+| `COMPUTER_DOCKER_WORKSPACE_MODE` | `bind` | `bind` mounts a host directory per computer; `volume` uses a named Docker volume per computer |
+| `COMPUTER_DOCKER_HOST_WORKSPACE_ROOT` | empty | In `bind` mode from inside a container: the host path equivalent of `COMPUTER_DOCKER_WORKSPACE_ROOT` |
 | `WORKSPACE_ROOT` | repository root | Maximum directory that approved workspace tools can access |
 | `WORKSPACE_MAX_FILE_BYTES` | `131072` | Read/write size limit for workspace files |
 | `APPROVAL_TIMEOUT_SECONDS` | `120` | How long a pending approval remains open |

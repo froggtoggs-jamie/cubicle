@@ -8,7 +8,7 @@ RUN apt-get update \
         tigervnc-standalone-server \
         xfwm4 xfce4-panel thunar xfce4-terminal \
         dbus-x11 x11-utils x11-xserver-utils xdotool scrot feh \
-        adwaita-icon-theme \
+        adwaita-icon-theme librsvg2-common \
         python3-pip jq unzip \
     && rm -rf /var/lib/apt/lists/*
 

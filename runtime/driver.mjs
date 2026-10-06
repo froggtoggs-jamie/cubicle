@@ -243,6 +243,30 @@ async function ensurePage() {
   return page;
 }
 
+// Chromium's toplevel window title ends with "Google Chrome for Testing".
+const CHROME_WINDOW = 'Google Chrome';
+
+async function minimizeBrowser() {
+  // Let the window map first, then minimize so the desktop and dock are what
+  // a freshly started computer shows. Best effort: a failure here is cosmetic.
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      await xdotool(['search', '--name', CHROME_WINDOW, 'windowminimize', '%@']);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
+
+async function raiseBrowser() {
+  try {
+    await xdotool(['search', '--name', CHROME_WINDOW, 'windowactivate', '--sync', '%1']);
+  } catch {
+    // The window manager may not be ready; the page still navigates.
+  }
+}
+
 // ---- HTTP API ------------------------------------------------------------------
 
 async function handle(request, response) {
@@ -271,6 +295,7 @@ async function handle(request, response) {
         const url = assertHttpUrl(body.url);
         const target = await ensurePage();
         await target.bringToFront();
+        await raiseBrowser();
         await target.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
         return { operation: 'browser.navigate', url: target.url(), title: await target.title() };
       }
@@ -371,6 +396,7 @@ async function main() {
   });
   trackPages();
   await (await ensurePage()).goto('about:blank');
+  await minimizeBrowser();
 
   server = createServer((request, response) => handle(request, response));
   server.on('upgrade', handleUpgrade);

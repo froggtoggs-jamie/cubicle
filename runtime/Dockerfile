@@ -1,12 +1,12 @@
-# Sandbox computer: a small XFCE desktop on an Xvnc display with Chromium,
-# a file manager and a terminal, driven by driver.mjs and viewable over VNC.
+# Sandbox computer: a small desktop on an Xvnc display with a Plank dock
+# (Chromium, Files, Terminal), driven by driver.mjs and viewable over VNC.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         tigervnc-standalone-server \
-        xfwm4 xfce4-panel thunar xfce4-terminal \
+        xfwm4 plank thunar xfce4-terminal \
         dbus-x11 x11-utils x11-xserver-utils xdotool scrot feh \
         adwaita-icon-theme librsvg2-common \
         python3-pip jq unzip \
@@ -20,12 +20,14 @@ RUN npm install --omit=dev --ignore-scripts
 
 COPY driver.mjs start.sh chromium-browser make_wallpaper.py ./
 COPY skel ./skel
+COPY applications ./applications
 # The dock's Chromium launcher reuses the browser Playwright started, so the
 # wrapper and the launcher icon need the exact build Playwright resolved.
 RUN CHROME="$(node -e "console.log(require('playwright').chromium.executablePath())")" \
     && sed -i "s#__CHROME__#${CHROME}#" chromium-browser \
-    && sed -i "s#__CHROME_ICON__#$(dirname "${CHROME}")/product_logo_48.png#" skel/.config/xfce4/panel/launcher-1/chromium.desktop \
+    && sed -i "s#__CHROME_ICON__#$(dirname "${CHROME}")/product_logo_48.png#" applications/open-grok-chromium.desktop \
     && install -m 0755 chromium-browser /usr/local/bin/chromium-browser \
+    && install -m 0644 applications/*.desktop /usr/share/applications/ \
     && chmod 0755 start.sh \
     && python3 make_wallpaper.py wallpaper \
     && mkdir -p /workspace \

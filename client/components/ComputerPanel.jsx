@@ -379,7 +379,7 @@ export default function ComputerPanel({ bot, onBackToChat, onHandBack }) {
               <FiTerminal className="text-purple-400" /> What is inside
             </h3>
             <div className="text-[11px] text-slate-400 leading-relaxed space-y-1.5">
-              <p>Ubuntu with an XFCE dock: Chromium, Files, Terminal. Node, Python with pip, git, curl, jq.</p>
+              <p>Ubuntu with a Plank dock: Chromium, Files, Terminal. Node, Python with pip, git, curl, jq.</p>
               <p>Writable: <span className="font-mono text-slate-300">/workspace</span> (kept between starts) and <span className="font-mono text-slate-300">/tmp</span>. Everything else is read-only.</p>
               <p>While you have control the bot cannot click, type, or navigate; it can still take screenshots.</p>
             </div>

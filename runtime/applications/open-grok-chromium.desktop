@@ -7,3 +7,5 @@ Exec=chromium-browser
 Icon=__CHROME_ICON__
 Terminal=false
 StartupNotify=false
+StartupWMClass=Chromium-browser
+Categories=Network;WebBrowser;

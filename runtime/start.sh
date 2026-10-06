@@ -9,11 +9,14 @@ export HOME="${HOME:-/home/pwuser}"
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_CACHE_HOME="/tmp/cache"
 export XDG_RUNTIME_DIR="/tmp/runtime-$(id -u)"
+# Plank stores its settings through GSettings; the keyfile backend lets the
+# image seed them (skel/.config/glib-2.0/settings/keyfile) without dconf.
+export GSETTINGS_BACKEND=keyfile
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CACHE_HOME" "$HOME/.config"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 # The home directory is an empty tmpfs on every start; seed the desktop
-# configuration (panel layout, dock launchers, GTK theme) from the image.
+# configuration (dock items, GTK theme) from the image.
 cp -R /opt/open-grok-computer/skel/. "$HOME/"
 
 # X server with VNC built in. Loopback only; the driver bridges it over the
@@ -41,7 +44,9 @@ export DBUS_SESSION_BUS_ADDRESS
 xsetroot -solid '#15171c'
 feh --no-fehbg --bg-fill /opt/open-grok-computer/wallpaper >/tmp/feh.log 2>&1 || true
 
-xfwm4 --compositor=off >/tmp/xfwm4.log 2>&1 &
-xfce4-panel --disable-wm-check >/tmp/panel.log 2>&1 &
+# The compositor gives Plank its transparent theme and smooth hiding.
+xfwm4 --compositor=on >/tmp/xfwm4.log 2>&1 &
+sleep 0.5
+plank >/tmp/plank.log 2>&1 &
 
 exec node /opt/open-grok-computer/driver.mjs

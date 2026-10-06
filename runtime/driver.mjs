@@ -25,7 +25,8 @@ const height = Number(process.env.VIEWPORT_HEIGHT || 720);
 const display = process.env.DISPLAY || ':1';
 const profileDir = '/tmp/profile';
 const vncPort = 5900;
-const PANEL_HEIGHT = 40;
+// The Plank dock auto-hides, so windows may use the full display.
+const PANEL_HEIGHT = 0;
 
 let context;
 let page;

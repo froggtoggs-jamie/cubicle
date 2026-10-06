@@ -7,3 +7,5 @@ Exec=xfce4-terminal --working-directory=/workspace
 Icon=utilities-terminal
 Terminal=false
 StartupNotify=false
+StartupWMClass=Xfce4-terminal
+Categories=System;TerminalEmulator;

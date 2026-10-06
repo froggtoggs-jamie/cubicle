@@ -7,3 +7,5 @@ Exec=thunar /workspace
 Icon=system-file-manager
 Terminal=false
 StartupNotify=false
+StartupWMClass=Thunar
+Categories=System;FileManager;

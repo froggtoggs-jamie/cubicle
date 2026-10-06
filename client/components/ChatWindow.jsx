@@ -35,9 +35,27 @@ function formatHeaderDate(msgs) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessages, onUpdateBotModel, onToggleComputer, defaultModel, prefill }) {
+export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessagesFor, streamingBots, onStreamingChange, onUpdateBotModel, onToggleComputer, defaultModel, prefill }) {
   const [inputPrompt, setInputPrompt] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
+  // Streaming is tracked per bot by the Dashboard so a reply keeps going
+  // while another bot or tab is shown.
+  const isStreaming = Boolean(bot?.id && streamingBots?.[bot.id]);
+  const setStreamingFor = (botId, value) => {
+    if (onStreamingChange) onStreamingChange(botId, value);
+  };
+
+  // One draft per bot: switching bots must not carry or lose typed text.
+  const draftsRef = useRef({});
+  const draftBotRef = useRef(bot?.id);
+  useEffect(() => {
+    const previous = draftBotRef.current;
+    const next = bot?.id;
+    if (previous === next) return;
+    if (previous) draftsRef.current[previous] = inputPrompt;
+    setInputPrompt(draftsRef.current[next] || '');
+    draftBotRef.current = next;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bot?.id]);
   const [isListening, setIsListening] = useState(false);
   const [activeModel, setActiveModel] = useState(bot?.model || defaultModel || '');
   const [selectedImage, setSelectedImage] = useState(null);
@@ -121,6 +139,9 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
     e?.preventDefault();
     if ((!inputPrompt.trim() && !selectedImage) || isStreaming) return;
 
+    const botId = bot?.id;
+    if (!botId) return;
+    const updateMessages = (updater) => setMessagesFor(botId, updater);
     const userText = inputPrompt;
     const currentSelected = selectedImage;
     
@@ -146,22 +167,21 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
       image_url: currentSelected?.previewUrl || finalImageUrl,
       created_at: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, userMsgObj]);
+    updateMessages((prev) => [...prev, userMsgObj]);
 
     try {
-      if (bot?.id) {
-        await sendMessage(bot.id, bot.id, userText, activeModel, finalImageUrl);
-        setIsStreaming(true);
+      {
+        await sendMessage(botId, botId, userText, activeModel, finalImageUrl);
+        setStreamingFor(botId, true);
         let streamingMsgId = null;
 
-
         subscribeToChatStream(
-          bot.id,
+          botId,
           activeModel,
           (event) => {
             if (event.type === 'turn.started') {
               streamingMsgId = event.botMsgId;
-              setMessages((prev) => [
+              updateMessages((prev) => [
                 ...prev,
                 {
                   id: streamingMsgId,
@@ -175,24 +195,24 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             } else if (event.type === 'request.opened') {
               setPendingApprovals((prev) => [
                 ...prev.filter((approval) => approval.requestId !== event.requestId),
-                event,
+                { ...event, botId },
               ]);
             } else if (event.type === 'computer.takeover_requested') {
               setTakeoverRequests((prev) => [
-                ...prev.slice(-2),
-                { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '' },
+                ...prev.slice(-4),
+                { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '', botId },
               ]);
             } else if (['tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'tool.expired'].includes(event.type)) {
               setToolEvents((prev) => [
-                ...prev.slice(-4),
-                { ...event, id: `${event.type}-${Date.now()}` },
+                ...prev.slice(-9),
+                { ...event, id: `${event.type}-${Date.now()}`, botId },
               ]);
               if (event.type === 'tool.expired') {
                 setPendingApprovals((prev) => prev.filter((approval) => approval.requestId !== event.requestId));
               }
               // Keep a per-message record of the tools the model used so the
               // reply shows them, matching what is persisted in raw_payload.
-              setMessages((prev) =>
+              updateMessages((prev) =>
                 prev.map((msg) => {
                   if (msg.id !== streamingMsgId) return msg;
                   const key = event.requestId || `${event.callName || event.tool}-${Date.now()}`;
@@ -212,7 +232,7 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
                 })
               );
             } else if (event.type === 'content.delta') {
-              setMessages((prev) =>
+              updateMessages((prev) =>
                 prev.map((msg) =>
                   msg.id === streamingMsgId
                     ? { ...msg, text: msg.text + event.delta }
@@ -222,7 +242,7 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             } else if (event.type === 'reasoning.delta') {
               // The model's thinking. Shown in a collapsible block, never
               // merged into the answer text.
-              setMessages((prev) =>
+              updateMessages((prev) =>
                 prev.map((msg) =>
                   msg.id === streamingMsgId
                     ? { ...msg, reasoning: (msg.reasoning || '') + event.delta }
@@ -230,18 +250,18 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
                 )
               );
             } else if (event.type === 'turn.completed') {
-              setMessages((prev) =>
+              updateMessages((prev) =>
                 prev.map((msg) => (msg.id === streamingMsgId ? { ...msg, isStreaming: false } : msg))
               );
-              setIsStreaming(false);
+              setStreamingFor(botId, false);
             }
           },
-          () => setIsStreaming(false)
+          () => setStreamingFor(botId, false)
         );
       }
     } catch (err) {
       console.error('Send message error:', err);
-      setIsStreaming(false);
+      setStreamingFor(botId, false);
     }
   };
 
@@ -316,7 +336,7 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             </span>
           </div>
 
-          {pendingApprovals.map((approval) => (
+          {pendingApprovals.filter((approval) => approval.botId === bot?.id).map((approval) => (
             <ApprovalCard
               key={approval.requestId}
               approval={approval}
@@ -324,7 +344,7 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             />
           ))}
 
-          {takeoverRequests.map((request) => (
+          {takeoverRequests.filter((request) => request.botId === bot?.id).map((request) => (
             <div
               key={request.id}
               className="my-3 p-4 rounded-2xl border border-purple-500/30 bg-purple-500/10 shadow-xl max-w-xl"
@@ -367,7 +387,7 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             </div>
           ))}
 
-          {toolEvents.map((event) => (
+          {toolEvents.filter((event) => event.botId === bot?.id).slice(-5).map((event) => (
             <div
               key={event.id}
               className="my-2 rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-2 text-[11px] text-slate-300"

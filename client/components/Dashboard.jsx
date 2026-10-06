@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import Sidebar from './Sidebar';
 import ChatWindow from './ChatWindow';
 import ComputerPanel from './ComputerPanel';
@@ -27,7 +27,10 @@ export default function Dashboard() {
   const [authState, setAuthState] = useState('checking');
   const [activeBotId, setActiveBotId] = useState('');
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'computer' | 'marketplace' | 'audit'
-  const [messages, setMessages] = useState([]);
+  // Transcripts are cached per bot so a reply that is still streaming for
+  // one bot survives switching to another bot or another tab.
+  const [messagesByBot, setMessagesByBot] = useState({});
+  const [streamingBots, setStreamingBots] = useState({});
   // Text to drop into the chat input, e.g. after handing a computer back.
   const [chatPrefill, setChatPrefill] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -80,13 +83,35 @@ export default function Dashboard() {
     return catalog;
   };
 
-  // Fetch chat history whenever active bot changes
+  const setMessagesFor = useCallback((botId, updater) => {
+    setMessagesByBot((prev) => {
+      const current = prev[botId] || [];
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return { ...prev, [botId]: next };
+    });
+  }, []);
+
+  const handleStreamingChange = useCallback((botId, value) => {
+    setStreamingBots((prev) => (Boolean(prev[botId]) === Boolean(value) ? prev : { ...prev, [botId]: Boolean(value) }));
+  }, []);
+
+  const activeBotStreaming = Boolean(activeBotId && streamingBots[activeBotId]);
+
+  // Fetch chat history whenever the active bot changes, and again once a
+  // reply finishes so the cache picks up the persisted message ids. A bot
+  // that is mid-reply keeps its live transcript.
   useEffect(() => {
-    if (!activeBotId) return;
+    if (!activeBotId || activeBotStreaming) return;
+    let cancelled = false;
     fetchChatHistory(activeBotId)
-      .then((history) => setMessages(history))
+      .then((history) => {
+        if (!cancelled) setMessagesFor(activeBotId, history);
+      })
       .catch((err) => console.error('Failed to load history:', err));
-  }, [activeBotId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBotId, activeBotStreaming, setMessagesFor]);
 
   const activeBot = bots.find((b) => b.id === activeBotId) || bots[0];
 
@@ -158,20 +183,25 @@ export default function Dashboard() {
 
       {/* Main Workspace Display Area */}
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
-        {activeTab === 'chat' && (
+        {/* The chat stays mounted on every tab so the draft, the open SSE
+            stream, approvals, and tool events survive a visit to the
+            Computer tab. `contents` keeps it out of the layout when shown. */}
+        <div className={activeTab === 'chat' ? 'contents' : 'hidden'}>
           <ChatWindow
             bot={activeBot}
             models={models}
             catalogError={catalogError}
             onRefreshModels={refreshModels}
-            messages={messages}
-            setMessages={setMessages}
+            messages={activeBotId ? messagesByBot[activeBotId] || [] : []}
+            setMessagesFor={setMessagesFor}
+            streamingBots={streamingBots}
+            onStreamingChange={handleStreamingChange}
             onUpdateBotModel={handleUpdateBotModel}
             onToggleComputer={() => setActiveTab('computer')}
             defaultModel={defaultModel}
             prefill={chatPrefill}
           />
-        )}
+        </div>
 
         {activeTab === 'computer' && (
           <ComputerPanel

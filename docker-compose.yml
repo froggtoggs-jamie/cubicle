@@ -1,0 +1,74 @@
+# Full stack: Caddy (TLS + single origin) -> Next.js client + FastAPI server.
+# Copy .env.example to .env, set APP_AUTH_TOKEN and SITE_ADDRESS, then:
+#   docker compose up --build -d
+# The computer provider runs the deterministic `fake` adapter in this layout;
+# the Docker/Playwright runtime needs host Docker access and is a follow-up.
+
+name: open-grok-bot
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-https://localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+  api:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      # Required. Pasted into the login screen by anyone using the app.
+      APP_AUTH_TOKEN: ${APP_AUTH_TOKEN:?Set APP_AUTH_TOKEN in .env, for example from `openssl rand -hex 32`}
+      # 1 when SITE_ADDRESS is https://, 0 for a plain http:// address.
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-1}
+      CORS_ORIGINS: ${SITE_ADDRESS:-https://localhost}
+      # LLM defaults. All optional; App Settings in the UI overrides them.
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai_compatible}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-}
+      COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
+      COMPUTER_PROVIDER: fake
+    volumes:
+      - api_data:/data
+      - ${WORKSPACE_DIR:-./workspace}:/workspace
+    extra_hosts:
+      # Lets LLM_BASE_URL point at a model server on the Docker host, e.g.
+      # http://host.docker.internal:8080/v1 (Linux needs this; Docker Desktop
+      # provides it already).
+      - "host.docker.internal:host-gateway"
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  web:
+    build:
+      context: ./client
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+    restart: unless-stopped
+    expose:
+      - "3000"
+
+volumes:
+  api_data:
+  caddy_data:
+  caddy_config:

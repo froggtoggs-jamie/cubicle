@@ -1,42 +1,88 @@
+// Behind the compose reverse proxy the API shares the page's origin and the
+// client is built with NEXT_PUBLIC_API_URL=/api/v1. The absolute default is
+// for `npm run dev` next to a locally running API.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
-const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || '';
 
 let sessionPromise = null;
+let authFailureHandler = null;
 
-function withAuthHeaders(headers = {}) {
-  const merged = new Headers(headers);
-  if (API_TOKEN && !merged.has('Authorization')) {
-    merged.set('Authorization', `Bearer ${API_TOKEN}`);
-  }
-  return merged;
+// Authentication is cookie-based. On loopback without APP_AUTH_TOKEN the API
+// hands out the session automatically; everywhere else the user signs in with
+// the token once and the HttpOnly cookie carries the session. The token is
+// never embedded in the client bundle.
+
+// Dashboard registers a handler so a missing or expired session shows the
+// login screen instead of silently returning empty data.
+export function setAuthFailureHandler(handler) {
+  authFailureHandler = handler;
 }
 
-async function ensureSession() {
+export function resetSession() {
+  sessionPromise = null;
+}
+
+function notifyAuthFailure(err) {
+  if (authFailureHandler) authFailureHandler(err);
+}
+
+export async function establishSession() {
   if (typeof window === 'undefined') return null;
   if (!sessionPromise) {
-    sessionPromise = fetch(`${API_BASE_URL}/auth/session`, {
-      credentials: 'include',
-      headers: withAuthHeaders(),
-    })
+    sessionPromise = fetch(`${API_BASE_URL}/auth/session`, { credentials: 'include' })
       .then((res) => {
         if (!res.ok) throw new Error('Authentication required');
         return res.json();
       })
       .catch((err) => {
         sessionPromise = null;
+        notifyAuthFailure(err);
         throw err;
       });
   }
   return sessionPromise;
 }
 
+export async function fetchAuthStatus() {
+  const res = await fetch(`${API_BASE_URL}/auth/status`, { credentials: 'include' });
+  if (!res.ok) throw new Error('The API server is unreachable.');
+  return res.json();
+}
+
+export async function loginWithToken(token) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE_URL}/auth/login`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+  } catch (err) {
+    throw new Error('The API server is unreachable.');
+  }
+  if (res.status === 401) throw new Error('That token was not accepted.');
+  if (!res.ok) throw new Error(`Sign in failed (HTTP ${res.status}).`);
+  const data = await res.json();
+  sessionPromise = Promise.resolve(data);
+  return data;
+}
+
+export async function logout() {
+  try {
+    await fetch(`${API_BASE_URL}/auth/logout`, { method: 'POST', credentials: 'include' });
+  } finally {
+    resetSession();
+  }
+}
+
 async function apiFetch(url, options = {}) {
-  await ensureSession();
-  return fetch(url, {
-    ...options,
-    credentials: 'include',
-    headers: withAuthHeaders(options.headers),
-  });
+  await establishSession();
+  const res = await fetch(url, { ...options, credentials: 'include' });
+  if (res.status === 401) {
+    resetSession();
+    notifyAuthFailure(new Error('Authentication required'));
+  }
+  return res;
 }
 
 export async function fetchBots() {
@@ -190,7 +236,7 @@ export function subscribeToChatStream(threadId, model, onEvent, onError) {
   let eventSource = null;
   let cancelled = false;
 
-  ensureSession()
+  establishSession()
     .then(() => {
       if (cancelled) return;
       eventSource = new EventSource(url, { withCredentials: true });

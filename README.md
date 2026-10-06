@@ -103,7 +103,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 You can also enter the provider key from **App Settings → Connections** after the UI loads. The environment variable is the server-side fallback.
 
-The local server creates a mode-0600 session token in `DATA_DIR` and the browser establishes an HttpOnly session automatically when connecting from loopback. For a deployment accessed beyond the local machine, set `APP_AUTH_TOKEN` on the server and expose the same value to the client as `NEXT_PUBLIC_API_TOKEN` through the deployment environment.
+The local server creates a mode-0600 session token in `DATA_DIR` and the browser establishes an HttpOnly session automatically when connecting from loopback. For a deployment accessed from other machines, set `APP_AUTH_TOKEN` on the server; the client then shows a sign-in screen that exchanges the token for an HttpOnly session cookie. The token is never embedded in the client bundle. See [Run the whole stack with Docker Compose](#run-the-whole-stack-with-docker-compose).
 
 ### Optional Docker computer runtime
 
@@ -119,9 +119,35 @@ The Docker daemon must be running before starting the API. Each bot gets a separ
 
 This is a local development runtime, not a hardened hostile-web sandbox. Follow the [official Playwright Docker guidance](https://playwright.dev/docs/docker) and do not send untrusted websites or credentials through it until network egress, image provenance, and stronger sandboxing are reviewed for your deployment.
 
+### Run the whole stack with Docker Compose
+
+The compose file runs the API, the client, and a Caddy reverse proxy so the whole app is reachable from other machines on one origin:
+
+```bash
+cp .env.example .env
+# edit .env: set APP_AUTH_TOKEN (openssl rand -hex 32) and SITE_ADDRESS
+docker compose up --build -d
+```
+
+Open the `SITE_ADDRESS` you configured and sign in with the token. Caddy routes `/api/*` to the FastAPI container and everything else to the Next.js container, with SSE buffering disabled so chat streams normally.
+
+**HTTPS on a LAN.** With an `https://` address Caddy issues a certificate from its own internal certificate authority for that hostname or IP, so browsers will warn until they trust the root certificate. Export it once and install it on each client machine:
+
+```bash
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./open-grok-bot-ca.crt
+```
+
+HTTPS is what makes voice dictation work from another machine, since browsers only grant microphone access on secure origins. If you would rather skip certificates, set `SITE_ADDRESS=http://<hostname-or-ip>` and `AUTH_COOKIE_SECURE=0`.
+
+**Local model servers.** Inside the API container, `localhost` is the container. A server on the Docker host is reachable as `http://host.docker.internal:<port>/v1`; a server on another machine by its LAN address. Enter it in App Settings or as `LLM_BASE_URL` in `.env`.
+
+**Workspace.** `WORKSPACE_DIR` (default `./workspace`) is mounted as the directory the approved workspace tools can read and write. Point it at a project directory on the Docker host to let bots work on real files there.
+
+**What the compose layout does not include yet.** The computer provider runs the `fake` adapter. The Docker/Playwright runtime needs the API to control the host's Docker daemon, which is a separate, more privileged setup and is documented as follow-up work.
+
 ## Configuration
 
-The client defaults to `http://127.0.0.1:8000/api/v1`. Set `NEXT_PUBLIC_API_URL` if the API runs elsewhere:
+The client defaults to `http://127.0.0.1:8000/api/v1`. Set `NEXT_PUBLIC_API_URL` if the API runs elsewhere. In the compose build it is set to the relative path `/api/v1` because Caddy serves both on one origin.
 
 ```bash
 NEXT_PUBLIC_API_URL="http://127.0.0.1:8000/api/v1"
@@ -140,7 +166,7 @@ The server reads these variables from the environment:
 | `DEFAULT_MODEL` | `x-ai/grok-4.5` (`grok-4-5` for MUAPI) | Initial model used for new settings and bots |
 | `DATA_DIR` | per-user hidden app directory | SQLite database, migration copies, and local key location |
 | `APP_ENCRYPTION_KEY` | generated mode-0600 key in `DATA_DIR` | Optional Fernet key for encrypted provider credentials |
-| `APP_AUTH_TOKEN` | generated mode-0600 token in `DATA_DIR` | Bearer token for non-loopback API access |
+| `APP_AUTH_TOKEN` | generated mode-0600 token in `DATA_DIR` | Access token for the sign-in screen and bearer auth; disables automatic loopback sessions when set |
 | `AUTH_SESSION_MAX_AGE` | `86400` | Session-cookie lifetime in seconds |
 | `AUTH_COOKIE_SECURE` | `0` | Set to `1` when serving over HTTPS |
 | `CORS_ORIGINS` | localhost and loopback client origins | Comma-separated browser origins allowed by the API |
@@ -307,7 +333,7 @@ On first start, the server creates a SQLite database under the per-user data dir
 For local development:
 
 - API routes require authentication. Loopback browser clients receive a session automatically; direct API clients can read `.auth-token` from `DATA_DIR` and send `Authorization: Bearer <token>`.
-- For non-loopback access, set `APP_AUTH_TOKEN` explicitly and configure `NEXT_PUBLIC_API_TOKEN` or call `/auth/login` before using protected routes. Do not expose the generated token through logs or source control.
+- For non-loopback access, set `APP_AUTH_TOKEN` explicitly and sign in through the UI (or call `/auth/login`) to obtain the session cookie. Do not expose the token through logs or source control.
 - Provider credentials are encrypted at rest with a mode-0600 Fernet key in `DATA_DIR`. Set `APP_ENCRYPTION_KEY` when the key must be supplied by deployment secrets or shared across restarts and hosts.
 - Settings responses never return provider credentials. Enter a new value to replace a stored key, or leave it blank to keep the current one.
 - Back up the SQLite database and encryption key together. If the key is lost, encrypted credentials must be entered again.
@@ -361,7 +387,7 @@ curl http://127.0.0.1:8000/api/v1/health
 
 If the server runs on another host or port, set `NEXT_PUBLIC_API_URL` before starting the client.
 
-If protected API calls return `401`, confirm the browser origin is listed in `CORS_ORIGINS`. For non-loopback deployments, set `NEXT_PUBLIC_API_TOKEN` when building the client or call `/api/v1/auth/login` first.
+If protected API calls return `401`, confirm the browser origin is listed in `CORS_ORIGINS`. For non-loopback deployments the UI shows the sign-in screen; enter the `APP_AUTH_TOKEN` value. Behind the compose proxy both the page and the API share one origin, so CORS does not apply.
 
 ### The Docker computer stays unavailable
 

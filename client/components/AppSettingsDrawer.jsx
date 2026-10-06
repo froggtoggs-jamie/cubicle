@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { FiX, FiCheck, FiEye, FiEyeOff } from "react-icons/fi";
-import { fetchSettings, saveSettings } from "../lib/api";
+import { fetchSettings, saveSettings, logout } from "../lib/api";
 import ModelPicker from "./ModelPicker";
 
 const PROVIDERS = [
@@ -48,6 +48,7 @@ export default function AppSettingsDrawer({
   onUpdateDefaultModel,
   onConnectionSaved,
   onProfileUpdate,
+  onSignOut,
 }) {
   const [userName, setUserName] = useState("");
   const [userEmail, setUserEmail] = useState("");
@@ -149,6 +150,14 @@ export default function AppSettingsDrawer({
     if (saved && onUpdateDefaultModel) onUpdateDefaultModel(defaultModel);
   };
 
+  const handleSignOut = async () => {
+    try {
+      await logout();
+    } finally {
+      if (onSignOut) onSignOut();
+    }
+  };
+
   const SaveButton = ({ field, onClick }) => (
     <button
       suppressHydrationWarning={true}
@@ -214,6 +223,15 @@ export default function AppSettingsDrawer({
               className={inputClass}
             />
           </div>
+
+          <button
+            suppressHydrationWarning={true}
+            type="button"
+            onClick={handleSignOut}
+            className="text-[11px] text-zinc-500 hover:text-zinc-200 transition underline-offset-2 hover:underline"
+          >
+            Sign out of this browser
+          </button>
         </div>
 
         {/* LLM Connection Card */}

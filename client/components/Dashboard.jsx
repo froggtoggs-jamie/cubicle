@@ -16,11 +16,15 @@ import {
   createBot, 
   updateBot 
 } from '../lib/api';
+import { establishSession, setAuthFailureHandler } from '../lib/api';
+import LoginScreen from './LoginScreen';
 
 export default function Dashboard() {
   const [bots, setBots] = useState([]);
   const [models, setModels] = useState([]);
   const [catalogError, setCatalogError] = useState(null);
+  // 'checking' -> 'ready' | 'login'. Any later 401 flips back to 'login'.
+  const [authState, setAuthState] = useState('checking');
   const [activeBotId, setActiveBotId] = useState('');
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'computer' | 'marketplace' | 'audit'
   const [messages, setMessages] = useState([]);
@@ -33,8 +37,19 @@ export default function Dashboard() {
     return 'You';
   });
 
+  // Session check. On loopback this succeeds silently; elsewhere the login
+  // screen collects the access token.
+  useEffect(() => {
+    setAuthFailureHandler(() => setAuthState('login'));
+    establishSession()
+      .then(() => setAuthState('ready'))
+      .catch(() => setAuthState('login'));
+    return () => setAuthFailureHandler(null);
+  }, []);
+
   // Initial Data Fetch
   useEffect(() => {
+    if (authState !== 'ready') return;
     async function initData() {
       try {
         const [botsData, catalog, settingsData] = await Promise.all([fetchBots(), fetchModels(), fetchSettings()]);
@@ -52,7 +67,7 @@ export default function Dashboard() {
       }
     }
     initData();
-  }, []);
+  }, [authState]);
 
   // Reload the model list, bypassing the server cache (used after the
   // connection settings change or from the picker's refresh button).
@@ -109,6 +124,18 @@ export default function Dashboard() {
       console.error('Failed to create bot:', err);
     }
   };
+
+  if (authState === 'login') {
+    return <LoginScreen onAuthenticated={() => setAuthState('ready')} />;
+  }
+
+  if (authState === 'checking') {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-[#09090b] text-zinc-500 text-xs font-sans select-none">
+        Connecting to the API…
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#09090b] text-zinc-100 font-sans">
@@ -173,6 +200,10 @@ export default function Dashboard() {
           }
         }}
         onProfileUpdate={(name) => setUserName(name || 'You')}
+        onSignOut={() => {
+          setIsSettingsOpen(false);
+          setAuthState('login');
+        }}
       />
     </div>
   );

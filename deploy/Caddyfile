@@ -1,0 +1,23 @@
+{
+	# Issue certificates from Caddy's own certificate authority for whatever
+	# hostname or IP SITE_ADDRESS names, so HTTPS works on a LAN without public
+	# DNS. Trust the root certificate on client machines (see the README) or set
+	# SITE_ADDRESS to an http:// address to skip TLS entirely.
+	local_certs
+	admin off
+}
+
+{$SITE_ADDRESS:https://localhost} {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy api:8000 {
+			# Chat responses are Server-Sent Events and must not be buffered.
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

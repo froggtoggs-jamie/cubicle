@@ -150,6 +150,8 @@ HTTPS is what makes voice dictation work from another machine, since browsers on
 
 **Workspace.** `WORKSPACE_DIR` (default `./workspace`) is mounted as the directory the approved workspace tools can read and write. Point it at a project directory on the Docker host to let bots work on real files there.
 
+**Data and backups.** The API keeps everything it persists under `/data`: the SQLite database (bots, history, settings with encrypted keys, approvals, audit) and, in volume workspace mode, one folder per sandbox computer. Caddy keeps its internal certificate authority and issued certificates under its own `/data`. By default both are Docker named volumes (`api_data`, `caddy_data`). To keep them in a directory your backups already cover, set `API_DATA_DIR` and `CADDY_DATA_DIR` in `.env` to host paths; the API runs as uid 10001, so make its directory writable by that user (`chown -R 10001:10001 <dir>`). To move an existing installation, stop the stack, copy the volume contents (`docker run --rm -v open-grok-bot_api_data:/from -v <dir>:/to alpine cp -a /from/. /to/`), set the variables, and start it again. `caddy_config` only holds Caddy's last applied config and can stay a volume.
+
 **Computer runtime (optional).** The compose stack can also run the Docker/Playwright computer runtime. It is off by default because it requires the API to control the host's Docker daemon. To enable it, set these two lines in `.env` and bring the stack up again:
 
 ```bash

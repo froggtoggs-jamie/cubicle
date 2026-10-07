@@ -25,7 +25,9 @@ services:
       exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
+      # A host path here (e.g. /mnt/user/appdata/open-grok-bot/caddy) keeps
+      # Caddy's internal CA and certificates with the rest of your appdata.
+      - ${CADDY_DATA_DIR:-caddy_data}:/data
       - caddy_config:/config
     networks:
       - default
@@ -63,7 +65,10 @@ services:
       # The Docker CLI inside the API only ever reaches the socket proxy.
       DOCKER_HOST: tcp://docker-socket-proxy:2375
     volumes:
-      - api_data:/data
+      # Everything the app persists (SQLite database, sandbox workspaces in
+      # volume mode). A host path here puts it in a directory your backups
+      # already cover instead of a named volume inside Docker's storage.
+      - ${API_DATA_DIR:-api_data}:/data
       - ${WORKSPACE_DIR:-./workspace}:/workspace
     extra_hosts:
       # Lets LLM_BASE_URL point at a model server on the Docker host, e.g.

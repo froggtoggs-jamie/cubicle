@@ -142,7 +142,7 @@ class DockerComputerProvider:
         if self.workspace_root not in workspace.parents:
             raise ComputerProviderError("The computer workspace escaped its configured root.")
         workspace.mkdir(parents=True, exist_ok=True)
-        workspace.chmod(0o700)
+        self._set_workspace_permissions(workspace)
         status = self._new_status(bot_id, generation=1)
         self._runtimes[computer_id] = _RuntimeRecord(
             status=status,
@@ -242,8 +242,18 @@ class DockerComputerProvider:
         except ComputerProviderError:
             pass  # Nothing with that name exists; that is the normal case.
 
+    def _set_workspace_permissions(self, workspace: Path) -> None:
+        # In bind mode the directory is shared with the sandbox, which runs
+        # as its own unprivileged user (not the API's), so it must be
+        # writable across users. In volume mode it is private to the API.
+        try:
+            workspace.chmod(0o777 if self.workspace_mode == "bind" else 0o700)
+        except OSError:
+            pass  # Some filesystems (and Windows) do not support this; not fatal.
+
     async def _launch(self, record: _RuntimeRecord) -> None:
         record.workspace.mkdir(parents=True, exist_ok=True)
+        self._set_workspace_permissions(record.workspace)
         await self._remove_stale_container(record)
         args = [
             "run",

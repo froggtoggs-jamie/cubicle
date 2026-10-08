@@ -248,14 +248,21 @@ class ComposioService:
                 batch = wanted[start:start + 50]
                 data = await self._request(
                     "GET", "/tools", api_key=api_key,
-                    params={"toolkit_slug": slug, "tool_slugs": ",".join(batch), "limit": len(batch), "include_deprecated": "false"},
+                    params={"toolkit_slug": slug, "tool_slugs": ",".join(batch), "limit": len(batch),
+                            "include_deprecated": "false", "toolkit_versions": "latest"},
                 )
                 items = data.get("items") if isinstance(data, dict) else None
                 tools.extend(item for item in (items or []) if isinstance(item, dict) and item.get("slug"))
         else:
             # Composio includes deprecated tools unless told otherwise; they
-            # would only waste the per-app budget.
-            params: Dict[str, Any] = {"toolkit_slug": slug, "limit": max(1, min(int(limit), 200)), "include_deprecated": "false"}
+            # would only waste the per-app budget. MCP-backed toolkits have no
+            # pinned version and list nothing unless "latest" is requested.
+            params: Dict[str, Any] = {
+                "toolkit_slug": slug,
+                "limit": max(1, min(int(limit), 200)),
+                "include_deprecated": "false",
+                "toolkit_versions": "latest",
+            }
             if important_only:
                 params["important"] = "true"
             data = await self._request("GET", "/tools", api_key=api_key, params=params)

@@ -217,7 +217,7 @@ class ComposioServiceTests(unittest.TestCase):
 
         tools = asyncio.run(service.list_tools("gmail", important_only=True, limit=40))
         self.assertEqual([t["slug"] for t in tools], ["GMAIL_FETCH_EMAILS"])
-        self.assertEqual(seen[-1], {"toolkit_slug": "gmail", "limit": "40", "include_deprecated": "false", "important": "true"})
+        self.assertEqual(seen[-1], {"toolkit_slug": "gmail", "limit": "40", "include_deprecated": "false", "toolkit_versions": "latest", "important": "true"})
 
         allowed = asyncio.run(service.allowed_tools("gmail"))
         self.assertEqual(allowed, ["GMAIL_SEND_EMAIL", "GMAIL_LIST_THREADS"])

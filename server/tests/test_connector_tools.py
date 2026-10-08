@@ -74,6 +74,9 @@ class FakeComposio:
             return [t for t in catalog if t.get("slug") in set(tool_slugs)]
         if self._fail_list and toolkit == "github":
             raise ConnectorServiceError("scoped key")
+        if toolkit == "context7_mcp":
+            # MCP-backed toolkits flag nothing as important.
+            return [] if important_only else [{"slug": "CONTEXT7_MCP_QUERY_DOCS", "toolkit": {"slug": "context7_mcp", "name": "Context7 MCP"}, "tags": ["readOnlyHint"]}]
         if toolkit == "gmail":
             tools = [GMAIL_SEND, GMAIL_FETCH, {"slug": "GMAIL_OLD", "is_deprecated": True, "toolkit": {"slug": "gmail"}}]
             if not important_only:
@@ -126,6 +129,13 @@ class SpecTests(unittest.TestCase):
         self.assertEqual([s.name for s in specs], ["gmail_send_email", "gmail_list_filters"])
         # Exactly the allowed slugs were requested, not a page of the catalog.
         self.assertEqual(service.listed, [("gmail", ["GMAIL_LIST_FILTERS", "GMAIL_SEND_EMAIL"])])
+
+    def test_toolkits_without_important_tools_offer_everything_they_have(self):
+        service = FakeComposio(toolkits=("context7_mcp",))
+        specs = asyncio.run(connector_tool_specs(service))
+        self.assertEqual([s.name for s in specs], ["context7_mcp_query_docs"])
+        self.assertFalse(specs[0].needs_approval)
+        self.assertEqual(service.listed, [("context7_mcp", True, 40), ("context7_mcp", False, 40)])
 
     def test_no_key_or_failures_degrade_to_no_connector_tools(self):
         self.assertEqual(asyncio.run(connector_tool_specs(FakeComposio(key=""))), [])

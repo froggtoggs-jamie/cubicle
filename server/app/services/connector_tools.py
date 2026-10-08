@@ -146,6 +146,10 @@ async def connector_tool_specs(service: Any = None) -> List[ToolSpec]:
                     important_only=settings.COMPOSIO_IMPORTANT_TOOLS_ONLY,
                     limit=per_toolkit,
                 )
+                if not tools and settings.COMPOSIO_IMPORTANT_TOOLS_ONLY:
+                    # Small toolkits (MCP servers especially) have nothing
+                    # flagged important; offer whatever they have instead.
+                    tools = await service.list_tools(toolkit, important_only=False, limit=per_toolkit)
         except ConnectorServiceError as exc:
             logger.warning("Could not list %s tools: %s", toolkit, exc)
             continue

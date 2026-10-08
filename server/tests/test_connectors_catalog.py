@@ -54,20 +54,28 @@ class ConnectorCatalogTests(unittest.TestCase):
     def test_live_toolkits_become_cards_and_are_cached(self):
         calls = []
 
+        pages = {
+            None: {
+                "items": [
+                    {"slug": "github", "name": "GitHub", "composio_managed_auth_schemes": ["OAUTH2"], "auth_schemes": ["OAUTH2"], "meta": {"description": "Issues and code", "logo": "https://logo/github.png"}},
+                    {"slug": "slack", "name": "Slack", "composio_managed_auth_schemes": ["OAUTH2"], "auth_schemes": ["OAUTH2"], "meta": {}},
+                ],
+                "next_cursor": "page2",
+            },
+            "page2": {
+                "items": [
+                    {"slug": "klaviyo", "name": "Klaviyo", "composio_managed_auth_schemes": [], "auth_schemes": ["OAUTH2", "API_KEY"]},
+                    {"slug": "weather", "name": "Weather", "composio_managed_auth_schemes": [], "auth_schemes": ["NO_AUTH"]},
+                    {"slug": "context7_mcp", "name": "Context7 MCP", "composio_managed_auth_schemes": [], "auth_schemes": None},
+                    {"name": "", "slug": ""},
+                ],
+                "next_cursor": None,
+            },
+        }
+
         def handler(request: httpx.Request) -> httpx.Response:
             calls.append(request)
-            return httpx.Response(
-                200,
-                json={
-                    "items": [
-                        {"slug": "github", "name": "GitHub", "composio_managed_auth_schemes": ["OAUTH2"], "auth_schemes": ["OAUTH2"], "meta": {"description": "Issues and code", "logo": "https://logo/github.png"}},
-                        {"slug": "slack", "name": "Slack", "composio_managed_auth_schemes": ["OAUTH2"], "auth_schemes": ["OAUTH2"], "meta": {}},
-                        {"slug": "klaviyo", "name": "Klaviyo", "composio_managed_auth_schemes": [], "auth_schemes": ["OAUTH2", "API_KEY"]},
-                        {"slug": "weather", "name": "Weather", "composio_managed_auth_schemes": [], "auth_schemes": ["NO_AUTH"]},
-                        {"name": "", "slug": ""},
-                    ]
-                },
-            )
+            return httpx.Response(200, json=pages[request.url.params.get("cursor")])
 
         with mock.patch.object(connectors, "storage_service", KeyedStorage()), mock.patch.object(
             connectors.httpx, "AsyncClient", _client_factory(handler)
@@ -77,7 +85,10 @@ class ConnectorCatalogTests(unittest.TestCase):
 
         self.assertEqual(first["source"], "api")
         self.assertTrue(first["configured"])
-        self.assertEqual([c["slug"] for c in first["cards"]], ["github", "slack", "klaviyo", "weather"])
+        # Every page is read, so the long tail (MCP servers) is in the catalog.
+        self.assertEqual([c["slug"] for c in first["cards"]], ["github", "slack", "klaviyo", "weather", "context7_mcp"])
+        self.assertEqual(first["total"], 5)
+        self.assertEqual(calls[1].url.params["cursor"], "page2")
         self.assertEqual(first["cards"][0]["logo"], "https://logo/github.png")
         by_slug = {c["slug"]: c for c in first["cards"]}
         self.assertTrue(by_slug["github"]["managed_auth"])
@@ -91,7 +102,14 @@ class ConnectorCatalogTests(unittest.TestCase):
         self.assertEqual(calls[0].headers["x-api-key"], "ak_test")
         self.assertEqual(calls[0].url.params["limit"], "200")
         self.assertEqual(second["source"], "api")
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
+
+        # refresh=1 bypasses the cache.
+        with mock.patch.object(connectors, "storage_service", KeyedStorage()), mock.patch.object(
+            connectors.httpx, "AsyncClient", _client_factory(handler)
+        ):
+            asyncio.run(connectors.catalog(refresh=True))
+        self.assertEqual(len(calls), 4)
 
     def test_failed_listing_falls_back_to_curated_with_an_error(self):
         def handler(request: httpx.Request) -> httpx.Response:

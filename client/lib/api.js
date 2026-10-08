@@ -185,9 +185,9 @@ export async function uploadImage(file) {
   return res.json();
 }
 
-export async function fetchConnectorCatalog() {
+export async function fetchConnectorCatalog(refresh = false) {
   try {
-    const res = await apiFetch(`${API_BASE_URL}/connectors/catalog`);
+    const res = await apiFetch(`${API_BASE_URL}/connectors/catalog${refresh ? '?refresh=1' : ''}`);
     if (!res.ok) return { cards: [], source: 'curated', configured: false };
     return await res.json();
   } catch (err) {

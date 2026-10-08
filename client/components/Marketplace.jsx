@@ -144,7 +144,9 @@ export default function Marketplace({ onOpenSettings }) {
       setLoading(true);
       setError('');
 
-      const catalog = await fetchConnectorCatalog();
+      // A manual refresh bypasses the server's catalog cache so an auth
+      // config just created in the Composio dashboard shows up at once.
+      const catalog = await fetchConnectorCatalog(refreshToken > 0);
       const nextApps = (catalog.cards || []).length
         ? catalog.cards.map(normalizeCard)
         : CURATED_APPS;
@@ -155,7 +157,10 @@ export default function Marketplace({ onOpenSettings }) {
       setSource(catalog.source || 'curated');
 
       if (catalog.configured && nextApps.length) {
-        const status = await fetchConnectionStatus(nextApps.map((app) => app.slug));
+        // A connection always sits on an auth config, so only those apps
+        // can be connected; asking about all ~1,600 would not fit in a URL.
+        const candidates = nextApps.filter((app) => app.hasAuthConfig || app.managedAuth === null);
+        const status = await fetchConnectionStatus(candidates.map((app) => app.slug));
         if (!mounted) return;
         setConnected(
           Object.entries(status.services || {})
@@ -233,11 +238,23 @@ export default function Marketplace({ onOpenSettings }) {
     }
   };
 
-  const visible = apps.filter((app) => {
-    if (!search) return true;
-    const query = search.toLowerCase();
-    return `${app.label} ${app.slug} ${app.blurb}`.toLowerCase().includes(query);
-  });
+  // Without a search, show the apps you can use (connected or set up) and
+  // the most popular ones; the whole catalog is reachable through search.
+  const POPULAR_LIMIT = 60;
+  const SEARCH_LIMIT = 200;
+  const query = search.trim().toLowerCase();
+  let visible;
+  let hiddenCount = 0;
+  if (query) {
+    const matches = apps.filter((app) => `${app.label} ${app.slug} ${app.blurb}`.toLowerCase().includes(query));
+    visible = matches.slice(0, SEARCH_LIMIT);
+    hiddenCount = matches.length - visible.length;
+  } else {
+    const mine = apps.filter((app) => connected.includes(app.slug) || app.hasAuthConfig);
+    const rest = apps.filter((app) => !mine.includes(app)).slice(0, POPULAR_LIMIT);
+    visible = [...mine, ...rest];
+    hiddenCount = apps.length - visible.length;
+  }
 
   return (
     <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[#09090b] select-none font-sans text-zinc-100">
@@ -332,7 +349,7 @@ export default function Marketplace({ onOpenSettings }) {
         ) : visible.length === 0 ? (
           <div className="py-16 text-center text-sm text-zinc-600">No apps match.</div>
         ) : (
-          visible.map((app, index) => {
+          [...visible.map((app, index) => {
             const isOn = connected.includes(app.slug);
             const isBusy = busySlug === app.slug;
             const needsSetup = configured && !isOn && app.needsSetup;
@@ -393,7 +410,14 @@ export default function Marketplace({ onOpenSettings }) {
                 </button>
               </div>
             );
-          })
+          }),
+          hiddenCount > 0 && (
+            <div key="__more" className="px-4 py-3 border-t border-[#1a1a1e] text-[11px] text-zinc-500 text-center">
+              {query
+                ? `Showing the first ${visible.length} matches of ${visible.length + hiddenCount}. Narrow the search to find the rest.`
+                : `Showing ${visible.length} of ${apps.length} apps. Search to find any other app, including MCP servers.`}
+            </div>
+          )]
         )}
       </div>
     </div>

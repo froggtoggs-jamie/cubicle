@@ -51,9 +51,42 @@ def _now() -> str:
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
+# Composio lists about 1,600 toolkits, 200 per page. Fetch them all so the
+# long tail (MCP servers, niche apps) is searchable, with a sane page cap.
+CATALOG_PAGE_SIZE = 200
+CATALOG_MAX_PAGES = 15
+
+
+async def _fetch_all_toolkits(composio_key: str):
+    """Every toolkit, most used first. Returns (items, error)."""
+    items = []
+    cursor = None
+    async with httpx.AsyncClient(timeout=20) as client:
+        for _ in range(CATALOG_MAX_PAGES):
+            params = {"limit": CATALOG_PAGE_SIZE, "sort_by": "usage"}
+            if cursor:
+                params["cursor"] = cursor
+            res = await client.get(f"{BACKEND_URL}/toolkits", params=params, headers={"x-api-key": composio_key})
+            # httpx responses have no `.ok`; the old check raised and the
+            # bare except silently fell back to the curated list every time.
+            if res.status_code != 200:
+                return items, f"Composio toolkit listing failed (HTTP {res.status_code})."
+            data = res.json()
+            page = data.get("items") or data.get("data") or []
+            items.extend(page)
+            cursor = data.get("next_cursor") if isinstance(data, dict) else None
+            if not cursor or not page:
+                break
+    return items, None
+
+
 @router.get("/catalog")
-async def catalog():
-    """Return toolkit catalog. Tries Composio backend API; falls back to curated list."""
+async def catalog(refresh: bool = False):
+    """Return toolkit catalog. Tries Composio backend API; falls back to curated list.
+
+    `refresh=1` bypasses the ten-minute cache, e.g. after creating an auth
+    config in the Composio dashboard.
+    """
     import time
     global _toolkit_cache, _toolkit_cache_at
 
@@ -61,23 +94,14 @@ async def catalog():
     composio_key = cfg.get("composio_api_key") or cfg.get("composio_key") or settings.COMPOSIO_API_KEY
 
     # Serve cache if fresh
-    if _toolkit_cache and (time.time() - _toolkit_cache_at) < 600:
+    if not refresh and _toolkit_cache and (time.time() - _toolkit_cache_at) < 600:
         return {**_toolkit_cache, "configured": bool(composio_key)}
 
     error = None
     if composio_key:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                res = await client.get(
-                    f"{BACKEND_URL}/toolkits",
-                    params={"limit": 200, "sort_by": "usage"},
-                    headers={"x-api-key": composio_key},
-                )
-            # httpx responses have no `.ok`; the old check raised and the
-            # bare except silently fell back to the curated list every time.
-            if res.status_code == 200:
-                data = res.json()
-                items = data.get("items") or data.get("data") or []
+            items, error = await _fetch_all_toolkits(composio_key)
+            if items and not error:
                 # Toolkits with an auth config you created yourself are
                 # connectable even when Composio has no managed credentials.
                 try:
@@ -108,12 +132,12 @@ async def catalog():
                         }
                     )
                 if cards:
-                    _toolkit_cache = {"cards": cards, "source": "api"}
+                    _toolkit_cache = {"cards": cards, "source": "api", "total": len(cards)}
                     _toolkit_cache_at = time.time()
                     return {**_toolkit_cache, "configured": True}
                 error = "Composio returned an empty toolkit list."
-            else:
-                error = f"Composio toolkit listing failed (HTTP {res.status_code})."
+            elif not error:
+                error = "Composio returned an empty toolkit list."
         except Exception as exc:
             error = f"Composio toolkit listing failed: {exc}"
 

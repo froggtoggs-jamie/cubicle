@@ -188,6 +188,15 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             ...prev.slice(-4),
             { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '', botId },
           ]);
+        } else if (event.type === 'attachment.added' && event.attachment) {
+          updateMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id !== streamingMsgId) return msg;
+              const existing = msg.attachments || [];
+              const same = (a) => a.source === event.attachment.source && a.path === event.attachment.path;
+              return existing.some(same) ? msg : { ...msg, attachments: [...existing, event.attachment] };
+            })
+          );
         } else if (['tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'tool.expired'].includes(event.type)) {
           if (event.requestId) {
             setPendingApprovals((prev) => prev.filter((approval) => approval.requestId !== event.requestId));
@@ -470,7 +479,7 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
 
           {/* Message Items List */}
           {activeMessages.map((msg) => (
-            <MessageItem key={msg.id} message={msg} />
+            <MessageItem key={msg.id} message={msg} botId={bot?.id} />
           ))}
 
           {isStreaming && (

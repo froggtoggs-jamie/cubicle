@@ -301,6 +301,7 @@ With an OpenAI-compatible provider the model is offered these functions. The gat
 | Tool | Gateway action | Approval |
 | --- | --- | --- |
 | `workspace_list`, `workspace_read`, `workspace_write` | `workspace.*` | yes |
+| `share_file` | `files.share` | no (puts a download card for a workspace or computer file in the chat) |
 | `computer_start`, `computer_screenshot`, `computer_files_list`, `computer_request_takeover` | `computer.*` | no |
 | `computer_browser_navigate`, `computer_terminal_execute`, `computer_send_input` | `computer.*` | yes |
 | `<app>_<action>` for every app connected through Composio, e.g. `gmail_fetch_emails`, `github_create_a_pull_request` | `connector.composio_read` or `connector.composio_action` | no for tools Composio marks read-only, yes for everything else |
@@ -355,6 +356,7 @@ All routes are prefixed with `/api/v1`.
 | POST | `/approvals/respond` | Submit an Allow/Deny approval response |
 | GET | `/audit?limit=100` | Read recent approval, tool, and connector events |
 | GET | `/tools/catalog` | Built-in tool groups and every connected app's tools, with the globally withheld apps |
+| GET | `/files/download?source=&path=&bot_id=` | Download (or `inline=1` preview) a file a bot shared; confined to the workspace or the bot's computer workspace |
 | GET | `/connectors/catalog` | Return curated or Composio-backed connector cards |
 | GET | `/connectors?services=...` | Check connector connection status |
 | POST | `/connectors/{slug}/authorize` | Request an OAuth URL |

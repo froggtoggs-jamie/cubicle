@@ -48,6 +48,8 @@ class Settings:
         os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[2]))
     ).expanduser().resolve()
     WORKSPACE_MAX_FILE_BYTES: int = int(os.getenv("WORKSPACE_MAX_FILE_BYTES", "131072"))
+    # Largest file a bot may hand to the user as a download card.
+    FILE_SHARE_MAX_BYTES: int = int(os.getenv("FILE_SHARE_MAX_BYTES", str(200 * 1024 * 1024)))
     # Turns run server-side and outlive the page, so an approval can wait
     # for someone to come back to it.
     APPROVAL_TIMEOUT_SECONDS: int = int(os.getenv("APPROVAL_TIMEOUT_SECONDS", "900"))

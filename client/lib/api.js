@@ -85,6 +85,28 @@ async function apiFetch(url, options = {}) {
   return res;
 }
 
+// Fetch a file a bot shared into the chat; the session cookie travels with
+// it, so the result is a Blob the caller saves or previews.
+export async function fetchSharedFile(attachment, botId, { inline = false } = {}) {
+  const params = new URLSearchParams({
+    source: attachment.source,
+    path: attachment.path,
+    bot_id: botId || '',
+    ...(inline ? { inline: '1' } : {}),
+  });
+  const res = await apiFetch(`${API_BASE_URL}/files/download?${params.toString()}`);
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch (err) {
+      /* not JSON */
+    }
+    throw new Error(detail);
+  }
+  return res.blob();
+}
+
 export async function fetchBots() {
   try {
     const res = await apiFetch(`${API_BASE_URL}/bots`);

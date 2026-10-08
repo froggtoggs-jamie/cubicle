@@ -18,6 +18,7 @@ from app.services.action_gateway import (
 )
 from app.services.composio_service import composio_service
 from app.services.connector_tools import connector_tool_specs
+from app.services import file_share as _file_share  # noqa: F401 - registers files.share
 from app.services.connector_actions import ConnectorCommandError, parse_connector_command
 from app.services.llm_tools import (
     ToolCallError,
@@ -249,6 +250,8 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
         # but it is never part of `text`, so it is not replayed to the model.
         accumulated_reasoning = ""
         tool_records: List[Dict[str, Any]] = []
+        # Files the bot handed to the user this turn (download cards).
+        attachments: List[Dict[str, Any]] = []
         tool_context = ""
 
         turn.emit({"type": "turn.started", "botMsgId": bot_msg_id, "model": selected_model})
@@ -393,6 +396,11 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
                             "botId": thread_id,
                             "reason": str(arguments.get("reason") or ""),
                         })
+                    if call_name == "share_file" and isinstance(result.get("attachment"), dict):
+                        attachment = dict(result["attachment"])
+                        if not any(a.get("source") == attachment.get("source") and a.get("path") == attachment.get("path") for a in attachments):
+                            attachments.append(attachment)
+                        turn.emit({"type": "attachment.added", "botMsgId": bot_msg_id, "attachment": attachment})
                     screenshot = _screenshot_message(result)
                     if screenshot is not None:
                         if _model_accepts_images(selected_model, llm_config):
@@ -415,6 +423,8 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
             raw_payload["reasoning"] = accumulated_reasoning
         if tool_records:
             raw_payload["tool_calls"] = tool_records
+        if attachments:
+            raw_payload["attachments"] = attachments
 
         bot_msg = {
             "id": bot_msg_id,

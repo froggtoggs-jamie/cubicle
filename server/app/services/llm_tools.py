@@ -140,6 +140,26 @@ COMPUTER_TOOLS: List[ToolSpec] = [
     ),
 ]
 
+SHARE_TOOLS: List[ToolSpec] = [
+    ToolSpec(
+        name="share_file",
+        description=(
+            "Give the user a file as a download card in the chat. Use it whenever you create or find a file the user "
+            "should have (reports, exports, images, archives). `source` is 'workspace' for the shared workspace or "
+            "'computer' for your computer's /workspace; `path` is relative to that root (computer paths may start with /workspace/)."
+        ),
+        parameters=_obj(
+            {
+                "source": {"type": "string", "enum": ["workspace", "computer"]},
+                "path": {"type": "string", "description": "File path inside the chosen root"},
+            },
+            ["source", "path"],
+        ),
+        group="share",
+        needs_approval=False,
+    ),
+]
+
 GITHUB_TOOLS: List[ToolSpec] = [
     ToolSpec(
         name="github_list_issues",
@@ -184,6 +204,7 @@ def available_tools(
     specs = list(WORKSPACE_TOOLS)
     if computer:
         specs.extend(COMPUTER_TOOLS)
+    specs.extend(SHARE_TOOLS)
     if connectors:
         taken = {spec.name for spec in specs}
         specs.extend(spec for spec in connectors if spec.name not in taken)
@@ -251,6 +272,11 @@ def describe_tools(specs: List[ToolSpec]) -> str:
             "Navigate with computer_browser_navigate, then computer_screenshot to see the page, computer_send_input to click or type, "
             "and computer_terminal_execute for commands. The computer starts itself the first time you use it (that first call can take a little longer); computer_start only warms it up. "
             "The user can watch the same desktop live and take control of it; when a step needs a human, call computer_request_takeover."
+        )
+    if "share" in groups:
+        lines.append(
+            "- Sharing files: share_file puts a download card for a file in the chat. Do it for anything you produce that the user "
+            "should keep, then mention the file by name; do not paste large file contents into the reply instead."
         )
     if "github" in groups:
         lines.append("- GitHub: github_list_issues and github_create_issue act through the user's connected GitHub account.")
@@ -388,6 +414,21 @@ def build_invocation(
             event["deltaY"] = _number(arguments, "deltaY")
             preview = f"Scroll by ({int(event['deltaX'])}, {int(event['deltaY'])}) in the computer for {bot_id}"
         return _computer_invocation("send_input", bot_id, {"event": event}, preview)
+
+    if name == "share_file":
+        source = _string(arguments, "source", required=True, max_len=20).strip().lower()
+        if source not in {"workspace", "computer"}:
+            raise ToolCallError("'source' must be workspace or computer.")
+        path = _string(arguments, "path", required=True, max_len=1000).strip()
+        if not path:
+            raise ToolCallError("'path' is required.")
+        where = "the shared workspace" if source == "workspace" else f"the computer for {bot_id}"
+        return ActionInvocation(
+            name="files.share",
+            arguments={"source": source, "path": path},
+            target={"bot_id": bot_id, "source": source},
+            preview=f"Share {path} from {where} with the user",
+        )
 
     if name in {"github_list_issues", "github_create_issue"}:
         owner = _string(arguments, "owner", required=True, max_len=100)

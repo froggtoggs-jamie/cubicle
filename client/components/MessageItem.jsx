@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FiX, FiChevronRight, FiTool } from 'react-icons/fi';
+import FileCard from './FileCard';
 
 function formatMsgTime(createdAt) {
   if (!createdAt) return '';
@@ -85,13 +86,14 @@ function ToolCallList({ calls }) {
   );
 }
 
-export default function MessageItem({ message }) {
+export default function MessageItem({ message, botId }) {
   const isUser = message.sender === 'user';
   const isError = message.isError || message.text?.toLowerCase().startsWith('error:');
   const formattedTime = formatMsgTime(message.created_at);
   // Live streams carry `reasoning`; persisted history carries it in raw_payload.
   const reasoning = message.reasoning || message.raw_payload?.reasoning || '';
   const toolCalls = message.toolCalls || message.raw_payload?.tool_calls || [];
+  const attachments = message.attachments || message.raw_payload?.attachments || [];
 
   if (isUser) {
     return (
@@ -169,6 +171,13 @@ export default function MessageItem({ message }) {
         >
           {message.text}
         </ReactMarkdown>
+        {attachments.length > 0 && (
+          <div className="mt-3 space-y-2">
+            {attachments.map((attachment) => (
+              <FileCard key={`${attachment.source}:${attachment.path}`} attachment={attachment} botId={botId || message.bot_id} />
+            ))}
+          </div>
+        )}
         {formattedTime && (
           <div className="text-[10px] text-zinc-400 text-right mt-1 font-mono tracking-tight select-none">
             {formattedTime}

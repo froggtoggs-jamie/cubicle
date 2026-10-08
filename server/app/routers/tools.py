@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/v1/tools", tags=["tools"])
 GROUP_LABELS = {
     "workspace": "Shared workspace",
     "computer": "Computer",
+    "share": "File sharing",
     "github": "GitHub (built-in)",
 }
 

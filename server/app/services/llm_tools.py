@@ -249,7 +249,7 @@ def describe_tools(specs: List[ToolSpec]) -> str:
         lines.append(
             "- Your computer: a sandboxed Linux container with a Chromium browser and a shell, with internet access. "
             "Navigate with computer_browser_navigate, then computer_screenshot to see the page, computer_send_input to click or type, "
-            "and computer_terminal_execute for commands. If a computer tool says the computer is not running, call computer_start first. "
+            "and computer_terminal_execute for commands. The computer starts itself the first time you use it (that first call can take a little longer); computer_start only warms it up. "
             "The user can watch the same desktop live and take control of it; when a step needs a human, call computer_request_takeover."
         )
     if "github" in groups:

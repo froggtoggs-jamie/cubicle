@@ -63,7 +63,6 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
   const [activeModel, setActiveModel] = useState(bot?.model || defaultModel || '');
   const [selectedImage, setSelectedImage] = useState(null);
   const [pendingApprovals, setPendingApprovals] = useState([]);
-  const [toolEvents, setToolEvents] = useState([]);
   // Cards shown when the bot asks the user to take over its computer.
   const [takeoverRequests, setTakeoverRequests] = useState([]);
 
@@ -190,10 +189,6 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '', botId },
           ]);
         } else if (['tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'tool.expired'].includes(event.type)) {
-          setToolEvents((prev) => [
-            ...prev.slice(-9),
-            { ...event, id: `${event.type}-${Date.now()}`, botId },
-          ]);
           if (event.requestId) {
             setPendingApprovals((prev) => prev.filter((approval) => approval.requestId !== event.requestId));
           }
@@ -470,26 +465,6 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
                   <FiMonitor className="text-sm" /> Open computer
                 </button>
               </div>
-            </div>
-          ))}
-
-          {toolEvents.filter((event) => event.botId === bot?.id).slice(-5).map((event) => (
-            <div
-              key={event.id}
-              className="my-2 rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-2 text-[11px] text-slate-300"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-mono text-cyan-300">{event.tool || 'workspace'}</span>
-                <span className={event.type === 'tool.completed' ? 'text-emerald-400' : 'text-amber-400'}>
-                  {event.type.replace('tool.', '')}
-                </span>
-              </div>
-              {event.error && <p className="mt-1 text-rose-300">{event.error}</p>}
-              {event.result && (
-                <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-slate-400">
-                  {JSON.stringify(event.result, null, 2)}
-                </pre>
-              )}
             </div>
           ))}
 

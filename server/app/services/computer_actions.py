@@ -23,6 +23,26 @@ def _status_for(call: ActionInvocation, provider: ComputerProvider):
     return status
 
 
+async def _ready(call: ActionInvocation, provider: ComputerProvider):
+    """The bot's computer, started if it is not running.
+
+    Models tend to give up on the computer after one "not running" error
+    rather than call computer_start, so operations bring it up themselves.
+    Returns (status, auto_started).
+    """
+    status = _status_for(call, provider)
+    if status.state == "running":
+        return status, False
+    status = await provider.start(status.computer_id)
+    return status, True
+
+
+def _mark_started(result: Dict[str, Any], auto_started: bool) -> Dict[str, Any]:
+    if auto_started and isinstance(result, dict):
+        return {**result, "computer_auto_started": True}
+    return result
+
+
 def register_computer_actions(
     gateway: Optional[ActionGateway] = None,
     provider: Optional[ComputerProvider] = None,
@@ -59,26 +79,27 @@ def register_computer_actions(
         return (await target_provider.health(_status_for(call, target_provider).computer_id)).to_dict()
 
     async def screenshot(call: ActionInvocation) -> Dict[str, Any]:
-        return await target_provider.screenshot(_status_for(call, target_provider).computer_id)
+        status, started = await _ready(call, target_provider)
+        return _mark_started(await target_provider.screenshot(status.computer_id), started)
 
     async def browser_navigate(call: ActionInvocation) -> Dict[str, Any]:
-        status = _status_for(call, target_provider)
-        return await target_provider.browser_navigate(status.computer_id, str(call.arguments.get("url") or ""))
+        status, started = await _ready(call, target_provider)
+        return _mark_started(await target_provider.browser_navigate(status.computer_id, str(call.arguments.get("url") or "")), started)
 
     async def terminal_execute(call: ActionInvocation) -> Dict[str, Any]:
-        status = _status_for(call, target_provider)
-        return await target_provider.terminal_execute(status.computer_id, str(call.arguments.get("command") or ""))
+        status, started = await _ready(call, target_provider)
+        return _mark_started(await target_provider.terminal_execute(status.computer_id, str(call.arguments.get("command") or "")), started)
 
     async def files_list(call: ActionInvocation) -> Dict[str, Any]:
-        status = _status_for(call, target_provider)
-        return await target_provider.files_list(status.computer_id, str(call.arguments.get("path") or "/workspace"))
+        status, started = await _ready(call, target_provider)
+        return _mark_started(await target_provider.files_list(status.computer_id, str(call.arguments.get("path") or "/workspace")), started)
 
     async def send_input(call: ActionInvocation) -> Dict[str, Any]:
-        status = _status_for(call, target_provider)
+        status, started = await _ready(call, target_provider)
         event = call.arguments.get("event")
         if not isinstance(event, dict):
             raise ComputerProviderError("Computer input requires an event object.")
-        return await target_provider.send_input(status.computer_id, event)
+        return _mark_started(await target_provider.send_input(status.computer_id, event), started)
 
     async def cleanup(call: ActionInvocation) -> Dict[str, Any]:
         return await target_provider.cleanup(_status_for(call, target_provider).computer_id)

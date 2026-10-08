@@ -35,7 +35,7 @@ class ToolCatalogTests(unittest.TestCase):
 
     def test_description_explains_approvals_and_the_computer(self):
         text = describe_tools(available_tools(computer=True, github=False))
-        self.assertIn("computer_start first", text)
+        self.assertIn("starts itself the first time you use it", text)
         self.assertIn("computer_request_takeover", text)
         self.assertIn("Tools that need approval:", text)
         self.assertIn("workspace_write", text)

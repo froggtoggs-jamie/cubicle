@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { FiX, FiArchive, FiTrash2, FiRotateCcw, FiAlertTriangle } from 'react-icons/fi';
 import ModelPicker from './ModelPicker';
+import BotToolsSection from './BotToolsSection';
 
 const AVATARS = ['🤖', '🧠', '🦊', '🐙', '🦉', '🐝', '🧭', '🛠️', '📚', '🎯', '🧪', '🌱'];
 const ACCENTS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#f43f5e', '#a3a3a3'];
@@ -94,6 +95,8 @@ export default function BotEditorModal({
   const [accent, setAccent] = useState(ACCENTS[0]);
   const [model, setModel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [toolSettings, setToolSettings] = useState({});
+  const [showTools, setShowTools] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -106,6 +109,8 @@ export default function BotEditorModal({
     setAccent(bot?.accent_color || ACCENTS[0]);
     setModel(bot?.model || defaultModel || '');
     setSystemPrompt(bot?.system_prompt || '');
+    setToolSettings(bot?.tool_settings || {});
+    setShowTools(false);
     setError('');
     setConfirmingDelete(false);
   }, [bot, defaultModel]);
@@ -127,6 +132,7 @@ export default function BotEditorModal({
         accent_color: accent,
         model: model.trim(),
         system_prompt: systemPrompt.trim(),
+        tool_settings: toolSettings,
       });
     } catch (err) {
       setError(err?.message || 'Could not save the bot.');
@@ -296,6 +302,23 @@ export default function BotEditorModal({
               maxLength={20000}
               className={`${inputClass} font-mono text-xs leading-relaxed resize-y min-h-[120px]`}
             />
+          </div>
+
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowTools((v) => !v)}
+              className="flex items-center justify-between w-full text-left"
+              aria-expanded={showTools}
+            >
+              <span className={labelClass + ' mb-0'}>Tools</span>
+              <span className="text-[11px] text-zinc-500">{showTools ? 'Hide' : 'Choose which tools this bot may use'}</span>
+            </button>
+            {showTools && (
+              <div className="mt-2">
+                <BotToolsSection settings={toolSettings} onChange={setToolSettings} />
+              </div>
+            )}
           </div>
 
           {error && <p className="text-xs text-rose-400">{error}</p>}

@@ -15,6 +15,8 @@ import {
   disconnectConnector,
   fetchConnectionStatus,
   fetchConnectorCatalog,
+  fetchSettings,
+  saveSettings,
 } from '../lib/api';
 
 // A stable fallback keeps the marketplace useful when the API or connector key
@@ -136,6 +138,8 @@ export default function Marketplace({ onOpenSettings }) {
   const [noticeLink, setNoticeLink] = useState('');
   const [error, setError] = useState('');
   const [refreshToken, setRefreshToken] = useState(0);
+  // Connected apps whose tools are withheld from every bot.
+  const [disabledToolkits, setDisabledToolkits] = useState([]);
 
   useEffect(() => {
     let mounted = true;
@@ -155,6 +159,12 @@ export default function Marketplace({ onOpenSettings }) {
       setApps(nextApps);
       setConfigured(Boolean(catalog.configured));
       setSource(catalog.source || 'curated');
+
+      if (catalog.configured) {
+        const settings = await fetchSettings();
+        if (!mounted) return;
+        setDisabledToolkits(Array.isArray(settings?.disabled_toolkits) ? settings.disabled_toolkits : []);
+      }
 
       if (catalog.configured && nextApps.length) {
         // A connection always sits on an auth config, so only those apps
@@ -235,6 +245,17 @@ export default function Marketplace({ onOpenSettings }) {
       setError(err.message || `Could not update ${app.label}`);
     } finally {
       setBusySlug(null);
+    }
+  };
+
+  const setToolsOffered = async (app, offered) => {
+    const next = offered ? disabledToolkits.filter((slug) => slug !== app.slug) : [...new Set([...disabledToolkits, app.slug])];
+    setDisabledToolkits(next);
+    try {
+      await saveSettings({ disabled_toolkits: next });
+    } catch (err) {
+      setDisabledToolkits(disabledToolkits);
+      setError(err.message || 'Could not update tool settings');
     }
   };
 
@@ -368,6 +389,17 @@ export default function Marketplace({ onOpenSettings }) {
                     {isOn && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 block flex-shrink-0" />}
                   </div>
                   <div className="text-[11px] text-zinc-500 truncate mt-0.5">{app.blurb}</div>
+                  {isOn && configured && (
+                    <label className="flex items-center gap-1.5 mt-1 text-[10px] text-zinc-400 cursor-pointer select-none w-max" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={!disabledToolkits.includes(app.slug)}
+                        onChange={(e) => setToolsOffered(app, e.target.checked)}
+                        className="accent-emerald-500"
+                      />
+                      {disabledToolkits.includes(app.slug) ? 'Tools off for all bots (still connected)' : 'Tools offered to bots'}
+                    </label>
+                  )}
                   {needsSetup && (
                     <div className="text-[10px] text-amber-400/80 truncate mt-0.5">
                       Bring your own credentials: {describeSchemes(app)}

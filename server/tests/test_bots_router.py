@@ -80,6 +80,20 @@ class BotsRouterTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             asyncio.run(bots_router.update_bot("missing", bots_router.BotUpdate(name="x")))
 
+    def test_tool_settings_are_validated_and_only_store_switch_offs(self):
+        bot = asyncio.run(bots_router.create_bot(bots_router.BotInput(name="Toolsy")))
+        updated = asyncio.run(bots_router.update_bot(bot["id"], bots_router.BotUpdate(tool_settings={
+            "groups": {"computer": False, "workspace": True},
+            "toolkits": {"gmail": False},
+            "tools": {"gmail_send_email": False, "exa_search": True},
+            "junk": {"x": 1},
+        })))
+        self.assertEqual(updated["tool_settings"], {"groups": {"computer": False}, "toolkits": {"gmail": False}, "tools": {"gmail_send_email": False}})
+        with self.assertRaises(HTTPException):
+            asyncio.run(bots_router.update_bot(bot["id"], bots_router.BotUpdate(tool_settings={"tools": {"x": "no"}})))
+        with self.assertRaises(HTTPException):
+            asyncio.run(bots_router.update_bot(bot["id"], bots_router.BotUpdate(tool_settings={"tools": ["x"]})))
+
     def test_archiving_cancels_a_running_turn(self):
         bot = asyncio.run(bots_router.create_bot(bots_router.BotInput(name="Busy")))
 

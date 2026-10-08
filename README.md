@@ -20,6 +20,7 @@ This is an independent open-source project and is not affiliated with xAI.
 ## What it does
 
 - **Bot personas:** Create and edit bots in a dialog with their own avatar, accent colour, role, description, model, and system prompt. Archive a bot to hide it while keeping its history, or delete it to remove the conversation and its computer too.
+- **Tool control:** A Tools menu in the chat header switches tool groups and connected apps on or off for that bot, the bot editor picks individual tools, and Plugins can withhold an app's tools from every bot without disconnecting it.
 - **Model picker:** Search the live model list reported by your server, or type any model ID. Models that advertise reasoning or vision support are tagged. The default model is `x-ai/grok-4.5` on OpenRouter.
 - **Server-side turns:** A reply runs as a server task, not inside the browser connection. Close the tab, reload, or open the same bot on another machine and the chat reattaches to the turn in progress and replays it. Approvals keep waiting until you answer, and the sidebar marks bots that are working or need you.
 - **Image attachments:** Upload JPEG, PNG, WEBP, GIF, or AVIF images. They are sent inline to vision-capable models as data URLs, so the image never leaves your machine except as part of the model request.
@@ -353,6 +354,7 @@ All routes are prefixed with `/api/v1`.
 | GET, POST | `/settings` | Read public settings or save write-only credentials and app settings |
 | POST | `/approvals/respond` | Submit an Allow/Deny approval response |
 | GET | `/audit?limit=100` | Read recent approval, tool, and connector events |
+| GET | `/tools/catalog` | Built-in tool groups and every connected app's tools, with the globally withheld apps |
 | GET | `/connectors/catalog` | Return curated or Composio-backed connector cards |
 | GET | `/connectors?services=...` | Check connector connection status |
 | POST | `/connectors/{slug}/authorize` | Request an OAuth URL |

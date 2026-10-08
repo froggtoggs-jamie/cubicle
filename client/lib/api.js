@@ -185,6 +185,13 @@ export async function uploadImage(file) {
   return res.json();
 }
 
+// Built-in tool groups and every connected app's tools, for tool settings.
+export async function fetchToolCatalog() {
+  const res = await apiFetch(`${API_BASE_URL}/tools/catalog`);
+  if (!res.ok) throw new Error('Failed to load the tool catalog');
+  return res.json();
+}
+
 export async function fetchConnectorCatalog(refresh = false) {
   try {
     const res = await apiFetch(`${API_BASE_URL}/connectors/catalog${refresh ? '?refresh=1' : ''}`);

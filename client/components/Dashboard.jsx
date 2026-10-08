@@ -165,6 +165,13 @@ export default function Dashboard() {
     setActiveTab('chat');
   };
 
+  // Any partial update to a bot (tool settings from the chat header, etc.).
+  const handleUpdateBot = async (botId, updates) => {
+    const updated = await updateBot(botId, updates);
+    setBots((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+    return updated;
+  };
+
   const handleSaveBot = async (values) => {
     if (botEditor?.mode === 'edit' && botEditor.bot) {
       const updated = await updateBot(botEditor.bot.id, values);
@@ -257,6 +264,7 @@ export default function Dashboard() {
             turnStates={turnStates}
             onUpdateBotModel={handleUpdateBotModel}
             onEditBot={() => activeBot && setBotEditor({ mode: 'edit', bot: activeBot })}
+            onUpdateBot={handleUpdateBot}
             onToggleComputer={() => setActiveTab('computer')}
             defaultModel={defaultModel}
             prefill={chatPrefill}

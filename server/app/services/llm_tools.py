@@ -192,6 +192,37 @@ def available_tools(
     return specs
 
 
+def filter_tools(
+    specs: List[ToolSpec],
+    tool_settings: Optional[Dict[str, Any]] = None,
+    disabled_toolkits: Optional[List[str]] = None,
+) -> List[ToolSpec]:
+    """Apply a bot's tool settings and the global app switch-offs.
+
+    `tool_settings` is {"groups": {id: bool}, "toolkits": {slug: bool},
+    "tools": {name: bool}}. Only an explicit False disables anything, so a
+    bot with no settings gets everything.
+    """
+    config = tool_settings if isinstance(tool_settings, dict) else {}
+    groups = config.get("groups") if isinstance(config.get("groups"), dict) else {}
+    toolkits = config.get("toolkits") if isinstance(config.get("toolkits"), dict) else {}
+    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    withheld = {str(slug) for slug in (disabled_toolkits or [])}
+
+    kept: List[ToolSpec] = []
+    for spec in specs:
+        if spec.connector:
+            toolkit = spec.connector.get("toolkit")
+            if toolkit in withheld or toolkits.get(toolkit) is False:
+                continue
+        elif groups.get(spec.group) is False:
+            continue
+        if tools.get(spec.name) is False:
+            continue
+        kept.append(spec)
+    return kept
+
+
 def openai_tool_definitions(specs: List[ToolSpec]) -> List[Dict[str, Any]]:
     return [
         {

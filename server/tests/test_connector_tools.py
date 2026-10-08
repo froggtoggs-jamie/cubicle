@@ -16,6 +16,7 @@ from app.services.llm_tools import (
     available_tools,
     build_invocation,
     describe_tools,
+    filter_tools,
     openai_tool_definitions,
 )
 
@@ -161,6 +162,33 @@ class SpecTests(unittest.TestCase):
         for definition in openai_tool_definitions(everything):
             self.assertRegex(definition["function"]["name"], r"^[a-zA-Z0-9_-]{1,64}$")
             self.assertEqual(definition["function"]["parameters"]["type"], "object")
+
+
+class FilterTests(unittest.TestCase):
+    def test_bot_settings_and_global_switch_offs_narrow_the_catalog(self):
+        connectors = asyncio.run(connector_tool_specs(FakeComposio()))
+        everything = available_tools(computer=True, connectors=connectors)
+        names = lambda specs: [s.name for s in specs]  # noqa: E731
+
+        self.assertEqual(names(filter_tools(everything, None, None)), names(everything))
+        self.assertEqual(names(filter_tools(everything, {}, [])), names(everything))
+
+        narrowed = filter_tools(
+            everything,
+            {"groups": {"computer": False}, "toolkits": {"github": False}, "tools": {"gmail_send_email": False}},
+            [],
+        )
+        self.assertNotIn("computer_screenshot", names(narrowed))
+        self.assertIn("workspace_read", names(narrowed))
+        self.assertNotIn("github_list_branches", names(narrowed))
+        self.assertNotIn("gmail_send_email", names(narrowed))
+        self.assertIn("gmail_fetch_emails", names(narrowed))
+
+        # A True never re-enables something switched off for every bot.
+        globally = filter_tools(everything, {"toolkits": {"gmail": True}}, ["gmail"])
+        self.assertFalse(any(s.connector and s.connector["toolkit"] == "gmail" for s in globally))
+        # Garbage settings are ignored rather than fatal.
+        self.assertEqual(names(filter_tools(everything, {"groups": "nope", "tools": 3}, None)), names(everything))
 
 
 class InvocationTests(unittest.TestCase):

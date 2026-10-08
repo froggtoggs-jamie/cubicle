@@ -16,6 +16,9 @@ class Bot(BaseModel):
     pinned: bool = False
     archived: bool = False
     archived_at: Optional[str] = None
+    # Which tools this bot may use: {"groups": {id: bool}, "toolkits":
+    # {slug: bool}, "tools": {name: bool}}; anything absent is enabled.
+    tool_settings: Dict[str, Any] = Field(default_factory=dict)
     unread_count: int = 0
     created_at: str
 
@@ -108,3 +111,5 @@ class AppSettingsSchema(BaseModel):
     composio_api_key_configured: bool = False
     default_model: str = Field(default_factory=lambda: settings.DEFAULT_MODEL)
     theme: str = "dark"
+    # Connected apps whose tools are withheld from every bot (still connected).
+    disabled_toolkits: List[str] = Field(default_factory=list)

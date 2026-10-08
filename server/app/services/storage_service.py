@@ -29,6 +29,7 @@ SETTING_KEYS = {
     "composio_key",
     "default_model",
     "theme",
+    "disabled_toolkits",
 }
 
 

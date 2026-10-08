@@ -12,5 +12,7 @@ async def get_settings():
 
 @router.post("", response_model=AppSettingsSchema)
 async def save_settings(new_settings: AppSettingsSchema):
-    storage_service.save_settings(new_settings.model_dump())
+    # Only the keys the client sent change; a page that knows nothing about a
+    # newer setting must not reset it to the default.
+    storage_service.save_settings(new_settings.model_dump(exclude_unset=True))
     return AppSettingsSchema(**storage_service.get_public_settings())

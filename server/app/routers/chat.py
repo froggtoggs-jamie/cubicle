@@ -24,6 +24,7 @@ from app.services.llm_tools import (
     available_tools,
     build_invocation,
     describe_tools,
+    filter_tools,
     openai_tool_definitions,
     parse_arguments,
 )
@@ -231,6 +232,12 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
             computer=settings.COMPUTER_PROVIDER == "docker",
             github=bool(composio_service.get_api_key()) and not connector_specs,
             connectors=connector_specs,
+        )
+        # The bot's own tool choices, then apps switched off for every bot.
+        tool_specs = filter_tools(
+            tool_specs,
+            current_bot.get("tool_settings") if current_bot else None,
+            storage_service.get_settings().get("disabled_toolkits") or [],
         )
     tool_definitions = openai_tool_definitions(tool_specs) if tool_specs else None
     tools_prompt = describe_tools(tool_specs)

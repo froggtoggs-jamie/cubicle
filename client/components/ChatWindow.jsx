@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import MessageItem from './MessageItem';
 import ApprovalCard from './ApprovalCard';
 import ModelPicker from './ModelPicker';
+import ToolsPopover from './ToolsPopover';
 import MascotAvatar from './MascotAvatar';
 import { FiPlus, FiMic, FiMicOff, FiMonitor, FiX, FiImage, FiEdit2 } from 'react-icons/fi';
 import {
@@ -37,7 +38,7 @@ function formatHeaderDate(msgs) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessagesFor, streamingBots, onStreamingChange, turnStates, onUpdateBotModel, onEditBot, onToggleComputer, defaultModel, prefill }) {
+export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessagesFor, streamingBots, onStreamingChange, turnStates, onUpdateBotModel, onEditBot, onUpdateBot, onToggleComputer, defaultModel, prefill }) {
   const [inputPrompt, setInputPrompt] = useState('');
   // Streaming is tracked per bot by the Dashboard so a reply keeps going
   // while another bot or tab is shown.
@@ -391,6 +392,14 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             onRefresh={onRefreshModels}
             onSelectModel={handleModelChange}
           />
+
+          {bot && onUpdateBot && (
+            <ToolsPopover
+              bot={bot}
+              onSave={(toolSettings) => onUpdateBot(bot.id, { tool_settings: toolSettings })}
+              onOpenEditor={onEditBot}
+            />
+          )}
 
           <button
             suppressHydrationWarning={true}

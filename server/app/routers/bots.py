@@ -23,7 +23,35 @@ MAX_SHORT = 200
 MAX_PROMPT = 20_000
 # Only these fields can be changed from the client; ids, counters, and
 # timestamps are the server's.
-EDITABLE_FIELDS = {"name", "role", "description", "avatar", "model", "accent_color", "system_prompt", "tools", "pinned"}
+EDITABLE_FIELDS = {"name", "role", "description", "avatar", "model", "accent_color", "system_prompt", "tools", "pinned", "tool_settings"}
+MAX_TOOL_SETTINGS_ENTRIES = 2000
+
+
+def clean_tool_settings(value: Any) -> Dict[str, Dict[str, bool]]:
+    """Keep only {"groups"|"toolkits"|"tools": {str: bool}} with bounded size."""
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="tool_settings must be an object.")
+    cleaned: Dict[str, Dict[str, bool]] = {}
+    total = 0
+    for section in ("groups", "toolkits", "tools"):
+        entries = value.get(section)
+        if entries is None:
+            continue
+        if not isinstance(entries, dict):
+            raise HTTPException(status_code=422, detail=f"tool_settings.{section} must be an object.")
+        kept = {}
+        for key, flag in entries.items():
+            if not isinstance(key, str) or not isinstance(flag, bool) or len(key) > 128:
+                raise HTTPException(status_code=422, detail=f"tool_settings.{section} must map names to booleans.")
+            # Only disabled entries need storing; enabled is the default.
+            if flag is False:
+                kept[key] = False
+        total += len(kept)
+        if kept:
+            cleaned[section] = kept
+    if total > MAX_TOOL_SETTINGS_ENTRIES:
+        raise HTTPException(status_code=422, detail="tool_settings has too many entries.")
+    return cleaned
 
 
 class BotInput(BaseModel):
@@ -48,6 +76,7 @@ class BotUpdate(BaseModel):
     tools: Optional[List[str]] = None
     pinned: Optional[bool] = None
     archived: Optional[bool] = None
+    tool_settings: Optional[Dict[str, Any]] = None
 
 
 def _find(bots: List[Dict[str, Any]], bot_id: str) -> int:
@@ -78,6 +107,7 @@ async def create_bot(bot_data: BotInput):
         "accent_color": bot_data.accent_color.strip() or "#3b82f6",
         "system_prompt": bot_data.system_prompt.strip() or f"You are {name}, a helpful AI assistant.",
         "tools": bot_data.tools,
+        "tool_settings": {},
         "pinned": False,
         "archived": False,
         "unread_count": 0,
@@ -100,6 +130,8 @@ async def update_bot(bot_id: str, updates: BotUpdate):
             raise HTTPException(status_code=422, detail="A bot needs a name.")
     if "model" in changes and not changes["model"].strip():
         changes.pop("model")
+    if "tool_settings" in changes:
+        changes["tool_settings"] = clean_tool_settings(changes["tool_settings"])
     archived = changes.pop("archived", None)
     bots[index].update({key: value for key, value in changes.items() if key in EDITABLE_FIELDS})
     if archived is not None:

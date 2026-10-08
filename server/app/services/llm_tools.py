@@ -421,9 +421,12 @@ def connector_invocation(spec: ToolSpec, arguments: Dict[str, Any]) -> ActionInv
     if shown:
         preview = f"{preview} ({', '.join(shown)})"
     action_name = "connector.composio_read" if info.get("read_only") else "connector.composio_action"
+    gateway_arguments: Dict[str, Any] = {"tool": info["slug"], "arguments": arguments}
+    if info.get("version"):
+        gateway_arguments["version"] = info["version"]
     return ActionInvocation(
         name=action_name,
-        arguments={"tool": info["slug"], "arguments": arguments},
+        arguments=gateway_arguments,
         target={"connector": info.get("toolkit"), "tool": info["slug"]},
         preview=preview[:300],
         display_arguments=arguments,

@@ -100,6 +100,7 @@ def spec_from_composio_tool(tool: Dict[str, Any]) -> Optional[ToolSpec]:
             "toolkit_name": toolkit_name,
             "title": str(tool.get("name") or slug),
             "read_only": read_only,
+            "version": str(tool.get("version") or "") or None,
         },
     )
 
@@ -170,9 +171,10 @@ async def execute_composio_tool(call: ActionInvocation) -> Dict[str, Any]:
     arguments = call.arguments if isinstance(call.arguments, dict) else {}
     slug = arguments.get("tool")
     payload = arguments.get("arguments")
+    version = arguments.get("version")
     if not isinstance(slug, str) or not isinstance(payload, dict):
         raise ConnectorServiceError("The connector tool call is malformed.")
-    return await composio_service.execute_tool(slug, payload)
+    return await composio_service.execute_tool(slug, payload, version=version if isinstance(version, str) else None)
 
 
 action_gateway.register_action(

@@ -28,6 +28,7 @@ GITHUB_CREATE_ISSUE_TOOL = "GITHUB_CREATE_AN_ISSUE"
 _SAFE_GITHUB_PART = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _SAFE_TOOLKIT_SLUG = re.compile(r"^[a-z0-9_-]{1,64}$")
 _SAFE_TOOL_SLUG = re.compile(r"^[A-Z0-9_]{1,128}$")
+_SAFE_VERSION = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 TOOLS_CACHE_SECONDS = 600.0
 CONNECTED_CACHE_SECONDS = 60.0
 
@@ -272,10 +273,10 @@ class ComposioService:
         return list(tools)
 
     async def execute_tool(
-        self, name: str, arguments: Dict[str, Any], api_key: Optional[str] = None
+        self, name: str, arguments: Dict[str, Any], api_key: Optional[str] = None, version: Optional[str] = None
     ) -> Dict[str, Any]:
         """Run a Composio tool and return its data, raising when Composio reports failure."""
-        response = (await self.call_tool(name, arguments, api_key=api_key))["data"]
+        response = (await self.call_tool(name, arguments, api_key=api_key, version=version))["data"]
         if response.get("successful") is False or response.get("error"):
             raise ConnectorServiceError(
                 extract_error_message(response.get("error"), f"Composio could not run {name}.")
@@ -423,19 +424,24 @@ class ComposioService:
         name: str,
         arguments: Dict[str, Any],
         api_key: Optional[str] = None,
+        version: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a Composio tool for this app's user.
 
         Returns {"data": <execute response>} where the execute response has
         `successful`, `data`, and `error`, which the normalisers below check.
+        `version` pins the toolkit version the tool schema came from.
         """
         if not _SAFE_TOOL_SLUG.fullmatch(name or ""):
             raise ConnectorServiceError("Connector tool name is invalid.")
+        body: Dict[str, Any] = {"user_id": self.user_id, "arguments": arguments}
+        if version and _SAFE_VERSION.fullmatch(str(version)):
+            body["version"] = str(version)
         result = await self._request(
             "POST",
             f"/tools/execute/{name}",
             api_key=api_key,
-            json={"user_id": self.user_id, "arguments": arguments},
+            json=body,
         )
         if not isinstance(result, dict):
             raise ConnectorServiceError("Composio returned an invalid tool result.")

@@ -41,6 +41,7 @@ GMAIL_SEND = {
 
 GMAIL_FETCH = {
     "slug": "GMAIL_FETCH_EMAILS",
+    "version": "20260901_00",
     "name": "Fetch Emails",
     "description": "Lists messages.",
     "toolkit": {"slug": "gmail", "name": "Gmail"},
@@ -190,7 +191,10 @@ class InvocationTests(unittest.TestCase):
 
     def test_executor_unwraps_composio_results_and_surfaces_failures(self):
         class Service:
-            async def execute_tool(self, slug, arguments):
+            versions = []
+
+            async def execute_tool(self, slug, arguments, version=None):
+                self.versions.append(version)
                 if slug == "GMAIL_FETCH_EMAILS":
                     return {"tool": slug, "data": {"messages": [1, 2]}}
                 raise ConnectorServiceError("quota")
@@ -202,6 +206,8 @@ class InvocationTests(unittest.TestCase):
             send = build_invocation("gmail_send_email", {"recipient_email": "a@b.c", "body": "x"}, "bot-1", specs=self.specs)
             with self.assertRaisesRegex(ConnectorServiceError, "quota"):
                 asyncio.run(connector_tools.execute_composio_tool(send))
+            # The schema's toolkit version travels with the call.
+            self.assertEqual(Service.versions, ["20260901_00", None])
 
 
 if __name__ == "__main__":

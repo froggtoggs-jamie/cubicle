@@ -193,6 +193,9 @@ The server reads these variables from the environment:
 | `LLM_TOOLS_ENABLED` | `1` | Offer the governed tools to the model through function calling. Set `0` to keep only the explicit slash commands |
 | `LLM_MAX_TOOL_ROUNDS` | `12` | Maximum model round-trips in one turn while it keeps calling tools. When the budget is spent the model gets one final call without tools so it still answers |
 | `LLM_SCREENSHOTS_TO_MODEL` | `auto` | Send sandbox screenshots to the model as images: `auto` (unless the model catalog says it has no vision), `always`, or `never` |
+| `CONTEXT_REPLAY_TURNS` | `3` | How many recent tool-using replies replay their full tool results to the model; older replies keep the calls with one-line stubs |
+| `CONTEXT_TOOL_RESULT_CHARS` | `4000` | How much of each tool result is kept with the reply |
+| `CONTEXT_TOOL_RESULTS_MESSAGE_CHARS` | `24000` | Total tool result text kept per reply (oldest results are dropped first) |
 | `MUAPI_API_KEY`, `MUAPI_BASE_URL` | empty | Legacy names. When `LLM_PROVIDER` is unset and `MUAPI_API_KEY` is present, the provider defaults to `muapi` and these values are used |
 | `COMPOSIO_API_KEY` | empty | Optional connector credential used when no key is saved in local settings |
 | `COMPOSIO_IMPORTANT_TOOLS_ONLY` | `1` | Offer the model only the tools Composio marks important for each connected app |

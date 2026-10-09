@@ -19,6 +19,7 @@ from app.services.action_gateway import (
 from app.services.approval_gate import approval_gate
 from app.services.composio_service import composio_service
 from app.services.connector_tools import connector_tool_specs
+from app.services.context_builder import build_history_messages, cap_message_results, trim_result_text
 from app.services import file_share as _file_share  # noqa: F401 - registers files.share
 from app.services.connector_actions import ConnectorCommandError, parse_connector_command
 from app.services.llm_tools import (
@@ -233,14 +234,11 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
         or llm_config.default_model
     )
 
-    formatted_history = []
-    for m in history:
-        if m["sender"] in ["user", "bot"]:
-            formatted_history.append({
-                "role": "user" if m["sender"] == "user" else "assistant",
-                "content": m.get("text", ""),
-                "image_url": m.get("image_url")
-            })
+    # Recent bot turns replay their tool calls and results in the provider's
+    # native shape, so the model builds on what it already found.
+    formatted_history = build_history_messages(history, replay_tools=llm_config.provider != "muapi")
+    model_info = openai_compatible_service.cached_model_info(llm_config, selected_model) if llm_config.provider != "muapi" else None
+    context_window = model_info.context_length if model_info is not None else None
 
     # Model tool calling is only possible on OpenAI-compatible servers. MUAPI
     # takes a single prompt, so there the slash commands remain the only tools.
@@ -275,6 +273,19 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
         tool_records: List[Dict[str, Any]] = []
         # Files the bot handed to the user this turn (download cards).
         attachments: List[Dict[str, Any]] = []
+        # Token usage as the provider reports it: the last round's prompt is
+        # the context in use; completions add up across rounds.
+        usage_prompt = 0
+        usage_completion = 0
+        usage_rounds = 0
+
+        def usage_payload() -> Dict[str, Any]:
+            return {
+                "prompt_tokens": usage_prompt,
+                "completion_tokens": usage_completion,
+                "rounds": usage_rounds,
+                "context_window": context_window,
+            }
         tool_context = ""
 
         turn.emit({"type": "turn.started", "botMsgId": bot_msg_id, "model": selected_model})
@@ -341,6 +352,11 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
                     turn.emit({"type": "reasoning.delta", "botMsgId": bot_msg_id, "delta": event["delta"]})
                 elif event["type"] == "tool_calls":
                     pending_calls = list(event.get("calls") or [])
+                elif event["type"] == "usage":
+                    usage_rounds += 1
+                    usage_prompt = int(event.get("prompt_tokens") or 0)
+                    usage_completion += int(event.get("completion_tokens") or 0)
+                    turn.emit({"type": "turn.usage", "botMsgId": bot_msg_id, "usage": usage_payload()})
                 elif event["type"] == "turn.completed":
                     round_ok = bool(event.get("ok", True))
 
@@ -373,6 +389,7 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
                 # them, then ask for a text-only reply.
                 for call in pending_calls:
                     tool_records.append({"id": call["id"], "name": call["name"], "status": "skipped",
+                                         "raw_arguments": call.get("arguments") or "{}",
                                          "error": "Tool budget for this turn was used up."})
                     turn.emit({"type": "tool.failed", "tool": call["name"], "callName": call["name"],
                                "error": "Not run: the tool budget for this turn was used up."})
@@ -388,7 +405,13 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
             for call in pending_calls:
                 call_id = call["id"]
                 call_name = call["name"]
-                record: Dict[str, Any] = {"id": call_id, "name": call_name, "status": "running"}
+                record: Dict[str, Any] = {
+                    "id": call_id,
+                    "name": call_name,
+                    "status": "running",
+                    # The model's own argument text, replayed verbatim in later turns.
+                    "raw_arguments": call.get("arguments") or "{}",
+                }
                 tool_records.append(record)
 
                 try:
@@ -435,7 +458,10 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
                             payload["image"] = "attached as the next message"
                         else:
                             payload["image"] = "omitted: the selected model does not accept images"
-                    messages.append({"role": "tool", "tool_call_id": call_id, "content": _tool_result_text(payload)})
+                    result_text = _tool_result_text(payload)
+                    messages.append({"role": "tool", "tool_call_id": call_id, "content": result_text})
+                    # Kept with the reply so later turns can see what came back.
+                    record["result"] = trim_result_text(result_text)
                 else:
                     record["error"] = outcome.get("error")
                     messages.append({
@@ -449,7 +475,10 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
         if accumulated_reasoning:
             raw_payload["reasoning"] = accumulated_reasoning
         if tool_records:
+            cap_message_results(tool_records)
             raw_payload["tool_calls"] = tool_records
+        if usage_rounds:
+            raw_payload["usage"] = usage_payload()
         if attachments:
             raw_payload["attachments"] = attachments
 

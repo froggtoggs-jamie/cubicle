@@ -5,6 +5,7 @@ import MessageItem from './MessageItem';
 import ApprovalCard from './ApprovalCard';
 import ModelPicker from './ModelPicker';
 import ToolsPopover from './ToolsPopover';
+import ContextMeter from './ContextMeter';
 import MascotAvatar from './MascotAvatar';
 import { FiPlus, FiMic, FiMicOff, FiMonitor, FiX, FiImage, FiEdit2 } from 'react-icons/fi';
 import {
@@ -87,6 +88,10 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
   ];
 
   const activeMessages = messages && messages.length > 0 ? messages : defaultInitialMessages;
+  // Context in use, from the latest reply that reported usage.
+  const lastUsageMessage = [...activeMessages].reverse().find((m) => m.sender === 'bot' && (m.usage || m.raw_payload?.usage));
+  const lastUsage = lastUsageMessage ? lastUsageMessage.usage || lastUsageMessage.raw_payload?.usage : null;
+  const activeModelInfo = (models || []).find((m) => m.id === activeModel);
 
   useEffect(() => {
     if (bot?.model) {
@@ -194,6 +199,10 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             ...prev.slice(-4),
             { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '', botId },
           ]);
+        } else if (event.type === 'turn.usage' && event.usage) {
+          updateMessages((prev) =>
+            prev.map((msg) => (msg.id === streamingMsgId ? { ...msg, usage: event.usage } : msg))
+          );
         } else if (event.type === 'attachment.added' && event.attachment) {
           updateMessages((prev) =>
             prev.map((msg) => {
@@ -396,6 +405,8 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
 
         {/* Right Side: Model Picker & Computer Monitor Toggle */}
         <div className="flex items-center gap-3">
+          <ContextMeter usage={lastUsage} contextWindow={activeModelInfo?.context_length} model={activeModel} />
+
           <ModelPicker
             currentModel={activeModel}
             models={models}

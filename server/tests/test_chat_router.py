@@ -408,6 +408,58 @@ class ChatStreamRouteTests(unittest.TestCase):
         # The seeded bot starts with a greeting; both turns were persisted after it.
         self.assertEqual([m["text"] for m in saved if m["sender"] == "bot"][-2:], ["Hello there", "late"])
 
+    def test_tool_results_persist_and_replay_on_the_next_turn(self):
+        bot = self.storage.get_bots()[0]
+        self.storage.add_message({"id": "m1", "thread_id": bot["id"], "bot_id": bot["id"], "sender": "user", "text": "what is in the workspace?"})
+        workspace_root = Path(self.temp_dir.name) / "workspace"
+        workspace_root.mkdir(exist_ok=True)
+        (workspace_root / "notes.txt").write_text("hi", encoding="utf-8")
+        gateway = ActionGateway(workspace=WorkspaceService(workspace_root), approvals=DecidingApprovalBroker("allow"), audit=self.storage)
+        recorder = {}
+        stream = _scripted_stream(
+            recorder,
+            [
+                [{"type": "tool_calls", "calls": [{"id": "c1", "name": "workspace_list", "arguments": "{\"path\": \".\"}"}]},
+                 {"type": "usage", "prompt_tokens": 300, "completion_tokens": 20},
+                 {"type": "turn.completed", "ok": True}],
+                [{"type": "content.delta", "delta": "There is notes.txt."},
+                 {"type": "usage", "prompt_tokens": 420, "completion_tokens": 9},
+                 {"type": "turn.completed", "ok": True}],
+                [{"type": "content.delta", "delta": "Still just notes.txt."},
+                 {"type": "usage", "prompt_tokens": 500, "completion_tokens": 8},
+                 {"type": "turn.completed", "ok": True}],
+            ],
+        )
+        patches = self._patches(recorder, stream=stream, gateway=gateway)
+        for p in patches:
+            p.start()
+        try:
+            _, events = asyncio.run(_start_and_stream(bot["id"]))
+            usage_events = [e["usage"] for e in events if e["type"] == "turn.usage"]
+            self.assertEqual([u["rounds"] for u in usage_events], [1, 2])
+            self.assertEqual(usage_events[-1], {"prompt_tokens": 420, "completion_tokens": 29, "rounds": 2, "context_window": None})
+
+            saved = [m for m in self.storage.get_messages(bot["id"]) if m["sender"] == "bot"][-1]
+            record = saved["raw_payload"]["tool_calls"][0]
+            self.assertEqual(record["raw_arguments"], "{\"path\": \".\"}")
+            self.assertIn("notes.txt", record["result"])
+            self.assertEqual(saved["raw_payload"]["usage"]["prompt_tokens"], 420)
+
+            # Next turn: the model is shown the earlier call and its result.
+            self.storage.add_message({"id": "m2", "thread_id": bot["id"], "bot_id": bot["id"], "sender": "user", "text": "anything new?"})
+            asyncio.run(_start_and_stream(bot["id"]))
+            replayed = recorder["rounds"][-1]["messages"]
+            # The seeded bot opens with a greeting; look at the tail.
+            tail = replayed[-5:]
+            self.assertEqual([m["role"] for m in tail], ["user", "assistant", "tool", "assistant", "user"])
+            self.assertEqual(tail[1]["tool_calls"], [{"id": "c1", "name": "workspace_list", "arguments": "{\"path\": \".\"}"}])
+            self.assertEqual(tail[2]["tool_call_id"], "c1")
+            self.assertIn("notes.txt", tail[2]["content"])
+            self.assertEqual(tail[3]["content"], "There is notes.txt.")
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
     def test_streaming_an_unknown_thread_reports_no_turn(self):
         with mock.patch.object(chat_router, "turn_manager", TurnManager()):
             response = asyncio.run(chat_router.stream_turn("nope", _fake_request(), turn=None, after=0))

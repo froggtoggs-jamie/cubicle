@@ -41,6 +41,12 @@ class Settings:
     # Screenshots as images for the model: auto (unless the catalog says the
     # model has no vision), always, or never.
     LLM_SCREENSHOTS_TO_MODEL: str = os.getenv("LLM_SCREENSHOTS_TO_MODEL", "auto").strip().lower()
+    # Context management. Tool results are stored with the reply that made
+    # them (trimmed) and the most recent tool-using bot turns are replayed to the model
+    # with those results so it does not redo work; older turns get stubs.
+    CONTEXT_REPLAY_TURNS: int = int(os.getenv("CONTEXT_REPLAY_TURNS", "3"))
+    CONTEXT_TOOL_RESULT_CHARS: int = int(os.getenv("CONTEXT_TOOL_RESULT_CHARS", "4000"))
+    CONTEXT_TOOL_RESULTS_MESSAGE_CHARS: int = int(os.getenv("CONTEXT_TOOL_RESULTS_MESSAGE_CHARS", "24000"))
     COMPOSIO_API_KEY: str = os.getenv("COMPOSIO_API_KEY", "")
     # Connected apps are offered to the model as tools. Composio flags a
     # subset of each toolkit as "important"; that keeps the list useful

@@ -95,6 +95,11 @@ function ToolCallList({ calls }) {
   );
 }
 
+function formatTokenCount(n) {
+  if (!Number.isFinite(n)) return '?';
+  return n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`;
+}
+
 export default function MessageItem({ message, botId }) {
   const isUser = message.sender === 'user';
   const isError = message.isError || message.text?.toLowerCase().startsWith('error:');
@@ -103,6 +108,7 @@ export default function MessageItem({ message, botId }) {
   const reasoning = message.reasoning || message.raw_payload?.reasoning || '';
   const toolCalls = message.toolCalls || message.raw_payload?.tool_calls || [];
   const attachments = message.attachments || message.raw_payload?.attachments || [];
+  const usage = message.usage || message.raw_payload?.usage || null;
 
   if (isUser) {
     return (
@@ -187,9 +193,17 @@ export default function MessageItem({ message, botId }) {
             ))}
           </div>
         )}
-        {formattedTime && (
-          <div className="text-[10px] text-zinc-400 text-right mt-1 font-mono tracking-tight select-none">
-            {formattedTime}
+        {(formattedTime || usage) && (
+          <div className="text-[10px] text-zinc-400 text-right mt-1 font-mono tracking-tight select-none flex items-center justify-end gap-2">
+            {usage && (
+              <span
+                className="text-zinc-600"
+                title={`${(usage.prompt_tokens || 0).toLocaleString()} prompt + ${(usage.completion_tokens || 0).toLocaleString()} completion tokens${usage.rounds > 1 ? ` over ${usage.rounds} rounds` : ''}`}
+              >
+                {formatTokenCount((usage.prompt_tokens || 0) + (usage.completion_tokens || 0))} tok
+              </span>
+            )}
+            {formattedTime && <span>{formattedTime}</span>}
           </div>
         )}
       </div>

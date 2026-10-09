@@ -30,5 +30,5 @@
 # Caddy only serves the site above for requests whose Host matches
 # SITE_ADDRESS; anything else would get a blank 200. Explain instead.
 http:// {
-	respond "Open Grok Bot is served at {$SITE_ADDRESS:https://localhost}. Open that address exactly: the hostname or IP in the URL must match SITE_ADDRESS." 404
+	respond "Cubicle is served at {$SITE_ADDRESS:https://localhost}. Open that address exactly: the hostname or IP in the URL must match SITE_ADDRESS." 404
 }

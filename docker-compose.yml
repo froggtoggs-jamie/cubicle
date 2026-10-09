@@ -8,7 +8,7 @@
 #   COMPUTER_PROVIDER=docker
 #   COMPOSE_PROFILES=computer
 
-name: open-grok-bot
+name: cubicle
 
 services:
   caddy:
@@ -25,7 +25,7 @@ services:
       exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      # A host path here (e.g. /mnt/user/appdata/open-grok-bot/caddy) keeps
+      # A host path here (e.g. /mnt/user/appdata/cubicle/caddy) keeps
       # Caddy's internal CA and certificates with the rest of your appdata.
       - ${CADDY_DATA_DIR:-caddy_data}:/data
       - caddy_config:/config
@@ -57,8 +57,8 @@ services:
       COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
       # Computer provider: fake (default) or docker (needs the `computer` profile).
       COMPUTER_PROVIDER: ${COMPUTER_PROVIDER:-fake}
-      COMPUTER_DOCKER_IMAGE: ${COMPUTER_DOCKER_IMAGE:-open-grok-bot-computer:2.0.0}
-      COMPUTER_DOCKER_NETWORK: open-grok-bot-computers
+      COMPUTER_DOCKER_IMAGE: ${COMPUTER_DOCKER_IMAGE:-cubicle-computer:2.0.0}
+      COMPUTER_DOCKER_NETWORK: cubicle-computers
       COMPUTER_DOCKER_WORKSPACE_MODE: ${COMPUTER_DOCKER_WORKSPACE_MODE:-volume}
       COMPUTER_DOCKER_HOST_WORKSPACE_ROOT: ${COMPUTER_DOCKER_HOST_WORKSPACE_ROOT:-}
       COMPUTER_DOCKER_WALLPAPER: ${COMPUTER_WALLPAPER:-}
@@ -124,7 +124,7 @@ services:
   # as a service. The API starts one container per bot from this image.
   computer-runtime:
     build: ./runtime
-    image: ${COMPUTER_DOCKER_IMAGE:-open-grok-bot-computer:2.0.0}
+    image: ${COMPUTER_DOCKER_IMAGE:-cubicle-computer:2.0.0}
     profiles:
       - computer
     deploy:
@@ -137,7 +137,7 @@ networks:
   # Runtime containers live here. They can reach the internet and the API,
   # but not Caddy, the web container, or the socket proxy.
   computers:
-    name: open-grok-bot-computers
+    name: cubicle-computers
   # Internal only: no egress, only the API and the socket proxy are attached.
   docker-control:
     internal: true

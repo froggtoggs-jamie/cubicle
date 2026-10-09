@@ -11,6 +11,27 @@ from app.schemas.contracts import AppSettingsSchema
 from app.routers import settings as settings_router
 
 
+class LegacyDatabaseNameTests(unittest.TestCase):
+    def test_a_pre_rename_database_file_is_adopted(self):
+        temp = tempfile.TemporaryDirectory()
+        root = Path(temp.name)
+        first = StorageService(root)
+        first.save_bots([{"id": "bot-legacy", "name": "Legacy"}])
+        first.close() if hasattr(first, "close") else None
+        (root / "cubicle.sqlite3").rename(root / "open-grok-bot.sqlite3")
+        for suffix in ("-wal", "-shm"):
+            if (root / f"cubicle.sqlite3{suffix}").exists():
+                (root / f"cubicle.sqlite3{suffix}").rename(root / f"open-grok-bot.sqlite3{suffix}")
+        second = StorageService(root)
+        self.assertEqual([b["id"] for b in second.get_bots()], ["bot-legacy"])
+        self.assertTrue((root / "cubicle.sqlite3").exists())
+        self.assertFalse((root / "open-grok-bot.sqlite3").exists())
+        try:
+            temp.cleanup()
+        except PermissionError:
+            pass
+
+
 class StorageServiceTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -171,7 +192,7 @@ class StorageServiceTests(unittest.TestCase):
     def test_schema_one_is_upgraded_with_owner_columns(self):
         upgrade_root = self.root / "schema-one"
         upgrade_root.mkdir()
-        db_path = upgrade_root / "open-grok-bot.sqlite3"
+        db_path = upgrade_root / "cubicle.sqlite3"
         with sqlite3.connect(db_path) as connection:
             connection.executescript(SCHEMA_MIGRATIONS[1])
             connection.execute(
@@ -202,9 +223,9 @@ class StorageServiceTests(unittest.TestCase):
 
     def _database_bytes(self) -> bytes:
         paths = [
-            self.root / "open-grok-bot.sqlite3",
-            self.root / "open-grok-bot.sqlite3-wal",
-            self.root / "open-grok-bot.sqlite3-shm",
+            self.root / "cubicle.sqlite3",
+            self.root / "cubicle.sqlite3-wal",
+            self.root / "cubicle.sqlite3-shm",
         ]
         return b"".join(path.read_bytes() for path in paths if path.exists())
 

@@ -1,1 +1,1 @@
-# Open Grok Bot backend package
+# Cubicle backend package

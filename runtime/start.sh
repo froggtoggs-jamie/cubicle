@@ -17,7 +17,7 @@ chmod 700 "$XDG_RUNTIME_DIR"
 
 # The home directory is an empty tmpfs on every start; seed the desktop
 # configuration (dock items, GTK theme, window manager) from the image.
-cp -R /opt/open-grok-computer/skel/. "$HOME/"
+cp -R /opt/cubicle-computer/skel/. "$HOME/"
 
 # Chromium profile (also on tmpfs). Use the window manager's title bar rather
 # than Chrome's own, so the "no minimize button" rule applies to the browser
@@ -30,7 +30,7 @@ fi
 # X server with VNC built in. Loopback only; the driver bridges it over the
 # token-protected port, so nothing unauthenticated reaches the network.
 Xtigervnc "$DISPLAY" -geometry "${WIDTH}x${HEIGHT}" -depth 24 -rfbport 5900 -localhost \
-    -SecurityTypes None -AlwaysShared -AcceptSetDesktopSize=0 -desktop "Open Grok Bot" \
+    -SecurityTypes None -AlwaysShared -AcceptSetDesktopSize=0 -desktop "Cubicle" \
     >/tmp/xvnc.log 2>&1 &
 
 i=0
@@ -50,11 +50,11 @@ export DBUS_SESSION_BUS_ADDRESS
 # Wallpaper: the generated default, or a file mounted over it by the host
 # (COMPUTER_DOCKER_WALLPAPER). Fall back to a flat colour if it cannot load.
 xsetroot -solid '#15171c'
-feh --no-fehbg --bg-fill /opt/open-grok-computer/wallpaper >/tmp/feh.log 2>&1 || true
+feh --no-fehbg --bg-fill /opt/cubicle-computer/wallpaper >/tmp/feh.log 2>&1 || true
 
 # The compositor gives Plank its transparent theme and smooth hiding.
 xfwm4 --compositor=on >/tmp/xfwm4.log 2>&1 &
 sleep 0.5
 plank >/tmp/plank.log 2>&1 &
 
-exec node /opt/open-grok-computer/driver.mjs
+exec node /opt/cubicle-computer/driver.mjs

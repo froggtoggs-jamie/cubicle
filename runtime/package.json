@@ -1,5 +1,5 @@
 {
-  "name": "open-grok-bot-computer-runtime",
+  "name": "cubicle-computer-runtime",
   "private": true,
   "type": "module",
   "dependencies": {

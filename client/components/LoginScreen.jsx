@@ -40,7 +40,7 @@ export default function LoginScreen({ onAuthenticated }) {
             <FiLock />
           </div>
           <div>
-            <h1 className="text-sm font-bold tracking-wide">Open Grok Bot</h1>
+            <h1 className="text-sm font-bold tracking-wide">Cubicle</h1>
             <p className="text-xs text-zinc-400 mt-0.5">Enter the access token for this server.</p>
           </div>
         </div>

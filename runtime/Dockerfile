@@ -12,7 +12,7 @@ RUN apt-get update \
         python3-pip jq unzip \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /opt/open-grok-computer
+WORKDIR /opt/cubicle-computer
 
 COPY package.json ./
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
@@ -25,13 +25,13 @@ COPY applications ./applications
 # wrapper and the launcher icon need the exact build Playwright resolved.
 RUN CHROME="$(node -e "console.log(require('playwright').chromium.executablePath())")" \
     && sed -i "s#__CHROME__#${CHROME}#" chromium-browser \
-    && sed -i "s#__CHROME__#${CHROME}#; s#__CHROME_ICON__#$(dirname "${CHROME}")/product_logo_48.png#" applications/open-grok-chromium.desktop \
+    && sed -i "s#__CHROME__#${CHROME}#; s#__CHROME_ICON__#$(dirname "${CHROME}")/product_logo_48.png#" applications/cubicle-chromium.desktop \
     && install -m 0755 chromium-browser /usr/local/bin/chromium-browser \
     && install -m 0644 applications/*.desktop /usr/share/applications/ \
     && chmod 0755 start.sh \
     && python3 make_wallpaper.py wallpaper \
     && mkdir -p /workspace \
-    && chown -R pwuser:pwuser /opt/open-grok-computer /workspace
+    && chown -R pwuser:pwuser /opt/cubicle-computer /workspace
 
 USER pwuser
 ENV PORT=3000 \
@@ -42,4 +42,4 @@ ENV PORT=3000 \
     VIEWPORT_HEIGHT=720
 EXPOSE 3000
 
-ENTRYPOINT ["/opt/open-grok-computer/start.sh"]
+ENTRYPOINT ["/opt/cubicle-computer/start.sh"]

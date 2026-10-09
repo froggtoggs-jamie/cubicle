@@ -319,6 +319,19 @@ class ActionGateway:
             self._decisions.pop(request.request_id, None)
         return decision
 
+    def resolve_approval(self, request: ActionRequest, decision: str, decided_by: str) -> bool:
+        """Answer an open approval on the user's behalf (the auto-approval gate).
+
+        Goes through the same broker the approval card uses, so the stored
+        approval, its audit event, and `wait_for_decision` all see one answer.
+        """
+        if not request.requires_approval or request.request_id not in self._pending:
+            return False
+        resolver = getattr(self.approvals, "resolve", None)
+        if not callable(resolver):
+            return False
+        return bool(resolver(request.request_id, decision, decided_by=decided_by))
+
     def get_pending_request(self, request_id: str) -> Optional[ActionRequest]:
         """Return a pending request for an authenticated continuation endpoint."""
 

@@ -3,6 +3,27 @@
 import React, { useEffect, useState } from 'react';
 import { FiAlertCircle, FiClock, FiRefreshCw, FiShield } from 'react-icons/fi';
 import { fetchAuditEvents } from '../lib/api';
+import GateDecisionsPanel from './GateDecisionsPanel';
+
+// The audit surface has two views: the event trail, and what the
+// auto-approval gate decided. Both are local records.
+function AuditTabs({ view, onChange }) {
+  const tab = (id, label) => (
+    <button
+      type="button"
+      onClick={() => onChange(id)}
+      className={`px-3 py-1.5 rounded-lg text-xs transition ${view === id ? 'bg-[#1e1e22] text-white' : 'text-zinc-400 hover:text-white'}`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex items-center gap-1 rounded-xl border border-[#1e1e22] p-1">
+      {tab('events', 'Events')}
+      {tab('gate', 'Auto-approval')}
+    </div>
+  );
+}
 
 function formatTimestamp(value) {
   if (!value) return '—';
@@ -21,6 +42,7 @@ function eventTone(event) {
 }
 
 export default function AuditPanel() {
+  const [view, setView] = useState('events');
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -43,6 +65,10 @@ export default function AuditPanel() {
 
   const recentEvents = [...events].reverse();
 
+  if (view === 'gate') {
+    return <GateDecisionsPanel tabs={<AuditTabs view={view} onChange={setView} />} />;
+  }
+
   return (
     <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[#09090b] font-sans text-zinc-100">
       <div className="px-6 py-4 border-b border-[#18181c] flex items-center justify-between flex-shrink-0">
@@ -55,14 +81,17 @@ export default function AuditPanel() {
             Local record of approvals, workspace tools, and connector actions.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={loadEvents}
-          className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-[#1e1e22] transition"
-          title="Refresh audit trail"
-        >
-          <FiRefreshCw className={loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex items-center gap-2">
+          <AuditTabs view={view} onChange={setView} />
+          <button
+            type="button"
+            onClick={loadEvents}
+            className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-[#1e1e22] transition"
+            title="Refresh audit trail"
+          >
+            <FiRefreshCw className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       {error && (

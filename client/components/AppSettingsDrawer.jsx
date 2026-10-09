@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { FiX, FiCheck, FiEye, FiEyeOff } from "react-icons/fi";
-import { fetchSettings, saveSettings, logout } from "../lib/api";
+import { fetchSettings, saveSettings, logout, checkDecider } from "../lib/api";
 import ModelPicker from "./ModelPicker";
 
 const PROVIDERS = [
@@ -25,6 +25,12 @@ const BASE_URL_PRESETS = [
   { label: "Ollama", value: "http://localhost:11434/v1" },
   { label: "LM Studio", value: "http://localhost:1234/v1" },
   { label: "llama.cpp", value: "http://localhost:8080/v1" },
+];
+
+const AUTO_APPROVAL_OPTIONS = [
+  { value: "off", label: "Off: every approval asks you" },
+  { value: "shadow", label: "Shadow: score and log, you still decide" },
+  { value: "on", label: "On: approve low-risk actions automatically" },
 ];
 
 const REASONING_OPTIONS = [
@@ -70,6 +76,13 @@ export default function AppSettingsDrawer({
   const [savedField, setSavedField] = useState(null);
   const [saveError, setSaveError] = useState("");
 
+  // Auto-approval gate
+  const [autoApproval, setAutoApproval] = useState("off");
+  const [deciderUrl, setDeciderUrl] = useState("");
+  const [deciderThreshold, setDeciderThreshold] = useState(0.2);
+  const [deciderCheck, setDeciderCheck] = useState(null); // {ok, scores, latency_ms, error}
+  const [checkingDecider, setCheckingDecider] = useState(false);
+
   useEffect(() => {
     if (isOpen) {
       // Load saved user profile
@@ -91,6 +104,10 @@ export default function AppSettingsDrawer({
             setComposioApiKey("");
             setComposioConfigured(Boolean(data.composio_api_key_configured));
             setDefaultModel(data.default_model || "");
+            setAutoApproval(data.auto_approval || "off");
+            setDeciderUrl(data.decider_url || "");
+            setDeciderThreshold(typeof data.decider_threshold === "number" ? data.decider_threshold : 0.2);
+            setDeciderCheck(null);
           }
         })
         .catch(console.error);
@@ -145,6 +162,35 @@ export default function AppSettingsDrawer({
   };
 
   const handleSaveComposio = () => persist("composio_key");
+
+  // The gate's settings are saved on their own so a half-typed URL never
+  // rides along with a model-server save.
+  const handleSaveGate = async () => {
+    setSaveError("");
+    try {
+      await saveSettings({
+        auto_approval: autoApproval,
+        decider_url: deciderUrl.trim(),
+        decider_threshold: Number(deciderThreshold),
+      });
+      triggerSavedNotice("gate");
+    } catch (err) {
+      console.error("Failed to save auto-approval settings:", err);
+      setSaveError(err?.message || "Failed to save auto-approval settings.");
+    }
+  };
+
+  const handleCheckDecider = async () => {
+    setCheckingDecider(true);
+    setDeciderCheck(null);
+    try {
+      setDeciderCheck(await checkDecider(deciderUrl.trim()));
+    } catch (err) {
+      setDeciderCheck({ ok: false, error: err?.message || "Could not reach the decision server." });
+    } finally {
+      setCheckingDecider(false);
+    }
+  };
 
   const handleSaveModel = async () => {
     const saved = await persist("model");
@@ -400,6 +446,103 @@ export default function AppSettingsDrawer({
               servers that support it. Not every server accepts every level (xhigh and max are llama.cpp /
               halogen-flash-server levels). A server that rejects the value returns an error in chat, so switch
               back to “Not sent” if that happens. Saved with the default model.
+            </p>
+          </div>
+        </div>
+
+        {/* Auto-approval */}
+        <div className="bg-[#18181b] border border-[#27272a] rounded-2xl p-5 space-y-5 shadow-sm">
+          <div>
+            <h3 className="text-sm font-bold text-zinc-100">Auto-approval</h3>
+            <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+              A small decision model scores each action that would normally ask you. Low-risk actions can run
+              without a prompt; anything it is unsure about still asks. Each bot can override this in its Tools menu.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+              <span className="text-emerald-400">•</span> Mode
+            </label>
+            <select
+              suppressHydrationWarning={true}
+              value={autoApproval}
+              onChange={(e) => setAutoApproval(e.target.value)}
+              className={`${inputClass} cursor-pointer`}
+            >
+              {AUTO_APPROVAL_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              Start with Shadow: approvals work exactly as before, and the Audit panel shows what the model would
+              have approved, so you can judge it before switching it on.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+              <span className="text-emerald-400">•</span> Decision server
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                suppressHydrationWarning={true}
+                type="text"
+                value={deciderUrl}
+                onChange={(e) => {
+                  setDeciderUrl(e.target.value);
+                  setDeciderCheck(null);
+                }}
+                placeholder="http://halogen-host:8731"
+                className={`${inputClass} font-mono`}
+              />
+              <button
+                suppressHydrationWarning={true}
+                type="button"
+                onClick={handleCheckDecider}
+                disabled={checkingDecider || !deciderUrl.trim()}
+                className="px-3.5 py-2.5 rounded-xl border border-[#33333a] bg-[#222226] hover:bg-[#2c2c34] text-xs font-medium text-zinc-300 hover:text-white transition flex-shrink-0 disabled:opacity-50"
+              >
+                {checkingDecider ? "Testing…" : "Test"}
+              </button>
+            </div>
+            {deciderCheck && (
+              <p className={`text-[10px] leading-relaxed ${deciderCheck.ok ? "text-emerald-400" : "text-red-300"}`}>
+                {deciderCheck.ok
+                  ? `Reachable, answered in ${deciderCheck.latency_ms} ms. A harmless probe scored ${Math.max(...Object.values(deciderCheck.scores || { x: 0 })).toFixed(2)} at most.`
+                  : deciderCheck.error}
+              </p>
+            )}
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              A halogen-flash-server with <span className="font-mono">decider-0.8b</span> on its NPU, or any server
+              with a <span className="font-mono">POST /v1/systemone</span> route. If it cannot be reached, every
+              approval asks you as usual.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+              <span className="text-emerald-400">•</span> Risk threshold
+              <span className="font-mono text-zinc-500">{Number(deciderThreshold).toFixed(2)}</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                suppressHydrationWarning={true}
+                type="range"
+                min="0.05"
+                max="0.5"
+                step="0.05"
+                value={deciderThreshold}
+                onChange={(e) => setDeciderThreshold(Number(e.target.value))}
+                className="flex-1 accent-emerald-500"
+              />
+              <SaveButton field="gate" onClick={handleSaveGate} />
+            </div>
+            <p className="text-[10px] leading-relaxed text-zinc-500">
+              An action is approved only when every risk score is below this. Lower is stricter. 0.20 is the
+              tested default; above 0.30 the model starts waving through things it should not.
             </p>
           </div>
         </div>

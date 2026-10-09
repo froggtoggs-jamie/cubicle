@@ -183,6 +183,12 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             ...prev.filter((approval) => approval.requestId !== event.requestId),
             { ...event, botId },
           ]);
+        } else if (event.type === 'gate.scored') {
+          // The auto-approval gate's verdict on a pending card. If it approved
+          // the action, the card is about to be replaced by tool.started.
+          setPendingApprovals((prev) =>
+            prev.map((approval) => (approval.requestId === event.requestId ? { ...approval, gate: event.verdict } : approval))
+          );
         } else if (event.type === 'computer.takeover_requested') {
           setTakeoverRequests((prev) => [
             ...prev.slice(-4),
@@ -217,6 +223,7 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
                     name: event.callName || event.tool,
                     status: event.type.replace('tool.', ''),
                     error: event.error || null,
+                    gate: event.gate || null,
                   },
                 ],
               };
@@ -401,6 +408,7 @@ export default function ChatWindow({ bot, models, catalogError, onRefreshModels,
             <ToolsPopover
               bot={bot}
               onSave={(toolSettings) => onUpdateBot(bot.id, { tool_settings: toolSettings })}
+              onSaveAutoApproval={(mode) => onUpdateBot(bot.id, { auto_approval: mode })}
               onOpenEditor={onEditBot}
             />
           )}

@@ -55,6 +55,13 @@ services:
       LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-}
       COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
+      # Auto-approval defaults. All optional; App Settings in the UI overrides
+      # them. A decision server on the Docker host itself is reached as
+      # http://host.docker.internal:<port>, like LLM_BASE_URL.
+      AUTO_APPROVAL: ${AUTO_APPROVAL:-off}
+      DECIDER_URL: ${DECIDER_URL:-}
+      DECIDER_THRESHOLD: ${DECIDER_THRESHOLD:-0.2}
+      DECIDER_TIMEOUT_SECONDS: ${DECIDER_TIMEOUT_SECONDS:-15}
       # Computer provider: fake (default) or docker (needs the `computer` profile).
       COMPUTER_PROVIDER: ${COMPUTER_PROVIDER:-fake}
       COMPUTER_DOCKER_IMAGE: ${COMPUTER_DOCKER_IMAGE:-cubicle-computer:2.0.0}

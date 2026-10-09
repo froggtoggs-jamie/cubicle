@@ -92,6 +92,17 @@ class WorkspaceService:
             return resolved
         return resolved
 
+    def existing_size(self, user_path: str) -> Optional[int]:
+        """Size of an existing workspace file, or None if there is none (or the path is invalid)."""
+        try:
+            path = self._resolve(user_path)
+        except WorkspaceToolError:
+            return None
+        try:
+            return path.stat().st_size if path.is_file() else None
+        except OSError:
+            return None
+
     def execute(self, call: WorkspaceToolCall) -> Dict[str, Any]:
         if call.name == "workspace.list":
             return self._list(call.path)

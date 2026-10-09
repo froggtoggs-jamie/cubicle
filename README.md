@@ -149,7 +149,7 @@ docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./cubicle-ca.
 
 HTTPS is what makes voice dictation work from another machine, since browsers only grant microphone access on secure origins. If you would rather skip certificates, set `SITE_ADDRESS=http://<hostname-or-ip>` and `AUTH_COOKIE_SECURE=0`.
 
-**Local model servers.** Inside the API container, `localhost` is the container. A server on the Docker host is reachable as `http://host.docker.internal:<port>/v1`; a server on another machine by its LAN address. Enter it in App Settings or as `LLM_BASE_URL` in `.env`.
+**Local model servers.** Inside the API container, `localhost` is the container. A server on the Docker host is reachable as `http://host.docker.internal:<port>/v1`; a server on another machine by its LAN address. Enter it in App Settings or as `LLM_BASE_URL` in `.env`. The same applies to the auto-approval decision server (`DECIDER_URL`, no `/v1` suffix).
 
 **Workspace.** `WORKSPACE_DIR` (default `./workspace`) is mounted as the directory the approved workspace tools can read and write. Point it at a project directory on the Docker host to let bots work on real files there.
 
@@ -219,6 +219,10 @@ The server reads these variables from the environment:
 | `WORKSPACE_ROOT` | repository root | Maximum directory that approved workspace tools can access |
 | `WORKSPACE_MAX_FILE_BYTES` | `131072` | Read/write size limit for workspace files |
 | `APPROVAL_TIMEOUT_SECONDS` | `900` | How long a pending approval remains open. Turns run server-side, so this can be generous |
+| `AUTO_APPROVAL` | `off` | Default auto-approval mode: `off`, `shadow` (score and log, the user still decides), or `on`. App Settings overrides it; each bot can override that |
+| `DECIDER_URL` | empty | Base URL of the decision server used for auto-approval (a halogen-flash-server with `decider-0.8b`, or any server with `POST /v1/systemone`) |
+| `DECIDER_THRESHOLD` | `0.2` | An action is auto-approved only when every risk score is below this |
+| `DECIDER_TIMEOUT_SECONDS` | `15` | How long to wait for the decision server before falling back to asking the user |
 | `HOST` | `127.0.0.1` | FastAPI bind address |
 | `PORT` | `8000` | FastAPI port |
 
@@ -271,6 +275,7 @@ The main code areas are:
 | `server/app/services/secret_store.py` | Fernet encryption for provider credentials |
 | `server/app/services/workspace_service.py` | Confined list/read/write workspace tools |
 | `server/app/services/approval_broker.py` | Pending approval coordination and audit events |
+| `server/app/services/approval_gate.py` | Auto-approval: scores pending actions with a decision model and logs every verdict |
 | `server/app/services/action_gateway.py` | Registered action policy, approval handoff, execution, and lifecycle audit |
 | `server/app/services/composio_service.py` | Composio v3 REST calls (auth configs, connected accounts, tool execution) and normalized GitHub issue results |
 | `server/app/services/connector_actions.py` | Explicit connector command parsing and gateway registration |
@@ -310,6 +315,14 @@ With an OpenAI-compatible provider the model is offered these functions. The gat
 | `computer_browser_navigate`, `computer_terminal_execute`, `computer_send_input` | `computer.*` | yes |
 | `<app>_<action>` for every app connected through Composio, e.g. `gmail_fetch_emails`, `github_create_a_pull_request` | `connector.composio_read` or `connector.composio_action` | no for tools Composio marks read-only, yes for everything else |
 | `github_list_issues`, `github_create_issue` | `connector.github_*` | no / yes (fallback when the Composio catalog cannot be fetched) |
+
+### Auto-approval
+
+Every tool that needs approval still opens an approval card. With auto-approval on, a small decision model scores the proposed action while the card is up and, when every risk score is low, answers the card on your behalf; the chat shows which calls it approved (a lightning mark on the tool chip) and the card says why. Anything it is unsure about, and anything it cannot score, waits for you exactly as before.
+
+The model is asked five plain yes/no questions about the action and the message that led to it: does it delete or overwrite data, send local data out, touch credentials or system configuration, download and run code, or do something irreversible such as sending a message. It sees the tool name, its display arguments (a path and byte count, never file contents), and the user's latest message; it never sees tool output, so text the bot read cannot talk the gate into anything. It runs as `decider-0.8b` on a halogen-flash-server NPU, scoring an action in well under a second.
+
+Set it up in **App Settings → Auto-approval**: the server URL (with a Test button), the mode, and the risk threshold. **Shadow** is the mode to start with: approvals behave exactly as before, and **Audit → Auto-approval** shows what the model would have approved next to what you actually decided, including the actions you denied that it would have let through. Switch to **On** once that list looks right. A bot's Tools menu can override the mode for that bot alone. Every scored action is kept in the local database (`gate_decisions`) with its scores, the exact state the model saw, and the final decision, so the log doubles as labelled data for tuning the questions or the threshold later.
 
 Computer tools appear only when `COMPUTER_PROVIDER=docker`. Connector tools appear for each toolkit with an active Composio connection. If the toolkit's auth config in the Composio dashboard restricts the tools available for execution, exactly those tools are offered; otherwise only the tools Composio flags as important are, at most `COMPOSIO_TOOLS_PER_TOOLKIT` per app (see `COMPOSIO_IMPORTANT_TOOLS_ONLY`). Results are trimmed to 20 KB before they are returned to the model, and a screenshot is attached as an image message when the model accepts images.
 
@@ -358,6 +371,8 @@ All routes are prefixed with `/api/v1`.
 | POST | `/upload` | Validate and upload an image attachment |
 | GET, POST | `/settings` | Read public settings or save write-only credentials and app settings |
 | POST | `/approvals/respond` | Submit an Allow/Deny approval response |
+| POST | `/gate/check` | Probe the auto-approval decision server with a harmless action |
+| GET | `/gate/decisions?limit=200` | What the auto-approval gate was shown and concluded, with the final decision |
 | GET | `/audit?limit=100` | Read recent approval, tool, and connector events |
 | GET | `/tools/catalog` | Built-in tool groups and every connected app's tools, with the globally withheld apps |
 | GET | `/files/download?source=&path=&bot_id=` | Download (or `inline=1` preview) a file a bot shared; confined to the workspace or the bot's computer workspace |

@@ -1,0 +1,286 @@
+"""Auto-approval of governed actions, scored by a decision model.
+
+Every action that needs approval still goes through the action gateway and
+the approval broker. This gate sits beside the approval card: given an open
+`ActionRequest`, it asks a decision model (decider-0.8b on a halogen-flash-
+server NPU, or anything serving `POST /v1/systemone`) a few yes/no risk
+questions about the proposed action and, when every answer is confidently
+"no", answers the approval on the user's behalf. Anything else is left to the
+user exactly as before.
+
+It fails closed: an unreachable server, a malformed reply, a timeout, or an
+unknown action all mean "ask the user". Every scored action is recorded in
+`gate_decisions` together with what was finally decided, so the log doubles
+as labelled data for tuning the questions or the model later.
+"""
+
+import json
+import logging
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import httpx
+
+from app.config import settings
+from app.schemas.contracts import ActionRequest
+from app.services.storage_service import StorageService, storage_service
+from app.services.workspace_service import WorkspaceService, WorkspaceToolError, workspace_service
+
+logger = logging.getLogger(__name__)
+
+MODES = ("off", "shadow", "on")
+
+# The yes/no risk questions. The decider answers each as its own pass over the
+# same state, so adding a question costs one NPU pass per action. Keep each
+# one a plain question with no rules in it: the model follows described
+# options far better than instructions.
+QUESTIONS: Dict[str, str] = {
+    "destroy": "Does this action delete or move files or data, or replace a file's contents with different or empty content?",
+    "exfiltrate": "Does this action send local data to an external host or network service?",
+    "privileged": "Does this action touch credentials, secrets, system configuration, permissions, or git history or remotes?",
+    "remote_code": "Does this action download and execute code from the internet?",
+    "irreversible": "Does this action send a message, make a payment, or change something other people can see?",
+}
+# The state the model sees. Only the action and the user's latest request go in;
+# never tool output or file contents, which could carry injected instructions.
+MAX_FIELD_CHARS = 2000
+
+
+@dataclass
+class GateVerdict:
+    """What the gate concluded about one action."""
+
+    mode: str                                   # off | shadow | on
+    outcome: str                                # auto_approved | ask | skipped | error
+    reason: str = ""
+    scores: Dict[str, float] = field(default_factory=dict)
+    max_score: Optional[float] = None
+    threshold: Optional[float] = None
+    latency_ms: Optional[int] = None
+    state: Optional[Dict[str, Any]] = None
+
+    @property
+    def auto_approved(self) -> bool:
+        return self.outcome == "auto_approved"
+
+    def to_event(self) -> Dict[str, Any]:
+        """The compact form sent to the client and stored with the tool record."""
+        return {
+            "mode": self.mode,
+            "outcome": self.outcome,
+            "reason": self.reason,
+            "scores": {key: round(value, 3) for key, value in self.scores.items()},
+            "maxScore": None if self.max_score is None else round(self.max_score, 3),
+            "threshold": self.threshold,
+        }
+
+
+class DeciderError(RuntimeError):
+    """The decision server could not give a usable answer."""
+
+
+class DeciderClient:
+    """Minimal client for `POST /v1/systemone` (TypeSafe's System One format)."""
+
+    def __init__(self, base_url: str, timeout: float):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    async def score(self, state: Dict[str, Any], questions: Dict[str, str]) -> Dict[str, float]:
+        payload = {
+            "state": state,
+            "questions": {key: {"type": "noul", "instructions": text} for key, text in questions.items()},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(f"{self.base_url}/v1/systemone", json=payload)
+        except httpx.HTTPError as exc:
+            raise DeciderError(f"decision server unreachable: {type(exc).__name__}") from exc
+        if response.status_code != 200:
+            detail = ""
+            try:
+                detail = str((response.json().get("error") or {}).get("message") or "")[:200]
+            except (ValueError, AttributeError):
+                pass
+            raise DeciderError(f"decision server returned {response.status_code}" + (f": {detail}" if detail else ""))
+        try:
+            answers = response.json()["answers"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise DeciderError("decision server reply had no answers") from exc
+
+        scores: Dict[str, float] = {}
+        for key in questions:
+            answer = answers.get(key) if isinstance(answers, dict) else None
+            value = answer.get("noul") if isinstance(answer, dict) else None
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0.0 <= float(value) <= 1.0:
+                raise DeciderError(f"decision server gave no probability for {key}")
+            scores[key] = float(value)
+        return scores
+
+
+def _clip(value: Any, limit: int = MAX_FIELD_CHARS) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + f"... [{len(value) - limit} more characters]"
+    if isinstance(value, dict):
+        return {str(key): _clip(item, limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clip(item, limit) for item in value[:50]]
+    return value
+
+
+class ApprovalGate:
+    def __init__(
+        self,
+        storage: StorageService = storage_service,
+        workspace: WorkspaceService = workspace_service,
+        client_factory=DeciderClient,
+    ):
+        self.storage = storage
+        self.workspace = workspace
+        self.client_factory = client_factory
+
+    # ---- configuration ------------------------------------------------------
+
+    def mode_for(self, bot: Optional[Dict[str, Any]]) -> str:
+        """The effective mode for a bot: its own override, else the app setting."""
+        override = (bot or {}).get("auto_approval")
+        if override in MODES:
+            return override
+        app = self.storage.get_settings().get("auto_approval")
+        return app if app in MODES else "off"
+
+    def _config(self) -> Dict[str, Any]:
+        current = self.storage.get_settings()
+        try:
+            threshold = float(current.get("decider_threshold") or settings.DECIDER_THRESHOLD)
+        except (TypeError, ValueError):
+            threshold = settings.DECIDER_THRESHOLD
+        return {
+            "url": str(current.get("decider_url") or settings.DECIDER_URL or "").strip(),
+            "threshold": min(0.99, max(0.01, threshold)),
+        }
+
+    # ---- what the model is shown ---------------------------------------------
+
+    def build_state(self, request: ActionRequest, call: Any, user_request: str) -> Dict[str, Any]:
+        """The action as the decision model sees it: keyed, compact, no tool output.
+
+        `arguments` are the display arguments the approval card shows; for a
+        workspace write that is the path and byte count, never the content.
+        Facts the harness knows for sure (does the file exist, how big is it)
+        are added as plain keys: the model reads keyed lookups far better than
+        it infers them.
+        """
+        state: Dict[str, Any] = {
+            "user_request": _clip(user_request or ""),
+            "tool": f"{request.tool}.{request.action}",
+            "intent": request.intent,
+            "arguments": _clip(dict(request.arguments)),
+        }
+        if request.target:
+            state["target"] = _clip(dict(request.target))
+        if request.tool == "workspace" and request.action == "write":
+            path = str(request.arguments.get("path") or getattr(call, "path", "") or "")
+            existing = self.workspace.existing_size(path) if path else None
+            state["file_exists"] = existing is not None
+            if existing is not None:
+                state["existing_bytes"] = existing
+        return state
+
+    # ---- scoring ---------------------------------------------------------------
+
+    async def evaluate(
+        self,
+        request: ActionRequest,
+        call: Any,
+        *,
+        mode: str,
+        user_request: str,
+    ) -> GateVerdict:
+        """Score one open action. Never raises; failures become an `error` verdict."""
+        if mode not in ("shadow", "on"):
+            return GateVerdict(mode=mode, outcome="skipped", reason="auto-approval is off")
+        if not request.requires_approval:
+            return GateVerdict(mode=mode, outcome="skipped", reason="action does not need approval")
+        config = self._config()
+        if not config["url"]:
+            return GateVerdict(mode=mode, outcome="error", reason="no decision server configured")
+
+        state = self.build_state(request, call, user_request)
+        started = time.monotonic()
+        try:
+            scores = await self.client_factory(config["url"], settings.DECIDER_TIMEOUT_SECONDS).score(state, QUESTIONS)
+        except DeciderError as exc:
+            verdict = GateVerdict(mode=mode, outcome="error", reason=str(exc), threshold=config["threshold"], state=state)
+            verdict.latency_ms = int((time.monotonic() - started) * 1000)
+            logger.warning("Auto-approval gate could not score %s: %s", request.request_id, exc)
+            return verdict
+        latency_ms = int((time.monotonic() - started) * 1000)
+
+        top = max(scores, key=scores.get)
+        max_score = scores[top]
+        if max_score < config["threshold"]:
+            outcome = "auto_approved" if mode == "on" else "ask"
+            reason = f"all risk scores below {config['threshold']:g}" + (" (shadow: the user still decides)" if mode == "shadow" else "")
+        else:
+            outcome = "ask"
+            reason = f"{top} scored {max_score:.2f}, at or above {config['threshold']:g}"
+        return GateVerdict(
+            mode=mode,
+            outcome=outcome,
+            reason=reason,
+            scores=scores,
+            max_score=max_score,
+            threshold=config["threshold"],
+            latency_ms=latency_ms,
+            state=state,
+        )
+
+    # ---- the decision log --------------------------------------------------------
+
+    def record(self, request: ActionRequest, verdict: GateVerdict) -> None:
+        self.storage.add_gate_decision(
+            {
+                "request_id": request.request_id,
+                "thread_id": request.thread_id,
+                "bot_id": request.bot_id,
+                "tool": f"{request.tool}.{request.action}",
+                "preview": request.preview,
+                "risk": request.risk,
+                "mode": verdict.mode,
+                "outcome": verdict.outcome,
+                "reason": verdict.reason,
+                "scores": verdict.scores,
+                "max_score": verdict.max_score,
+                "threshold": verdict.threshold,
+                "latency_ms": verdict.latency_ms,
+                "state": verdict.state,
+                "questions": QUESTIONS if verdict.scores else None,
+                "final_decision": None,
+                "decided_by": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    def record_final(self, request_id: str, decision: str, decided_by: str) -> None:
+        """What was finally decided (allow/deny/expired) and by whom (user/decider)."""
+        self.storage.update_gate_decision(
+            request_id,
+            {"final_decision": decision, "decided_by": decided_by, "resolved_at": datetime.now(timezone.utc).isoformat()},
+        )
+
+    async def check(self, base_url: str) -> Dict[str, Any]:
+        """Send one fixed, harmless probe to a decision server and report what came back."""
+        client = self.client_factory(base_url, settings.DECIDER_TIMEOUT_SECONDS)
+        state = {"user_request": "list the files", "tool": "workspace.list", "arguments": {"path": "."}}
+        started = time.monotonic()
+        try:
+            scores = await client.score(state, QUESTIONS)
+        except DeciderError as exc:
+            return {"ok": False, "error": str(exc), "latency_ms": int((time.monotonic() - started) * 1000)}
+        return {"ok": True, "scores": {key: round(value, 3) for key, value in scores.items()}, "latency_ms": int((time.monotonic() - started) * 1000)}
+
+
+approval_gate = ApprovalGate()

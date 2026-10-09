@@ -26,9 +26,16 @@ export function Switch({ on, onChange, disabled = false, label }) {
   );
 }
 
+const AUTO_APPROVAL_CHOICES = [
+  { value: 'inherit', label: 'App setting' },
+  { value: 'off', label: 'Off' },
+  { value: 'shadow', label: 'Shadow' },
+  { value: 'on', label: 'On' },
+];
+
 // Quick per-conversation switches for tool groups and connected apps.
 // Changes are saved to the bot straight away and apply from the next turn.
-export default function ToolsPopover({ bot, onSave, onOpenEditor }) {
+export default function ToolsPopover({ bot, onSave, onSaveAutoApproval, onOpenEditor }) {
   const [open, setOpen] = useState(false);
   const [catalog, setCatalog] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -126,6 +133,44 @@ export default function ToolsPopover({ bot, onSave, onOpenEditor }) {
             })}
             {catalog && !catalog.toolkits?.length && (
               <p className="px-4 py-2 text-[11px] text-zinc-500">No connected apps. Connect some in Plugins.</p>
+            )}
+
+            {onSaveAutoApproval && (
+              <>
+                <div className="px-4 pt-3 pb-1 text-[10px] uppercase tracking-wide text-zinc-500">Auto-approval</div>
+                <div className="px-4 py-2">
+                  <div className="flex rounded-lg border border-[#26262b] overflow-hidden">
+                    {AUTO_APPROVAL_CHOICES.map((choice) => {
+                      const current = bot?.auto_approval || 'inherit';
+                      const active = current === choice.value;
+                      return (
+                        <button
+                          key={choice.value}
+                          type="button"
+                          disabled={saving}
+                          onClick={async () => {
+                            if (active) return;
+                            setSaving(true);
+                            try {
+                              await onSaveAutoApproval(choice.value);
+                            } finally {
+                              setSaving(false);
+                            }
+                          }}
+                          className={`flex-1 px-2 py-1.5 text-[11px] transition disabled:opacity-40 ${
+                            active ? 'bg-emerald-500/20 text-emerald-300' : 'text-zinc-400 hover:text-white hover:bg-[#16161a]'
+                          }`}
+                        >
+                          {choice.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-1.5 text-[10px] text-zinc-500">
+                    Let a decision model approve this bot&apos;s low-risk actions. “App setting” follows Auto-approval in App Settings.
+                  </p>
+                </div>
+              </>
             )}
           </div>
 

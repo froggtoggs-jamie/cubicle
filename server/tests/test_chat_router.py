@@ -88,6 +88,10 @@ async def _collect_sse(response):
     return events
 
 
+async def _fake_context_window(config, model):
+    return 32000
+
+
 def _fake_request(last_event_id=None):
     headers = {"last-event-id": str(last_event_id)} if last_event_id is not None else {}
     return SimpleNamespace(headers=headers)
@@ -127,6 +131,7 @@ class ChatStreamRouteTests(unittest.TestCase):
             mock.patch.object(chat_router.llm_service, "stream_chat_completion", stream or _fake_stream(recorder)),
             mock.patch.object(chat_router, "composio_service", NoComposio()),
             mock.patch.object(chat_router, "turn_manager", manager or TurnManager()),
+            mock.patch.object(chat_router, "_context_window_for", _fake_context_window),
         ]
         if gateway is not None:
             patches.append(mock.patch.object(chat_router, "action_gateway", gateway))
@@ -437,7 +442,7 @@ class ChatStreamRouteTests(unittest.TestCase):
             _, events = asyncio.run(_start_and_stream(bot["id"]))
             usage_events = [e["usage"] for e in events if e["type"] == "turn.usage"]
             self.assertEqual([u["rounds"] for u in usage_events], [1, 2])
-            self.assertEqual(usage_events[-1], {"prompt_tokens": 420, "completion_tokens": 29, "rounds": 2, "context_window": None})
+            self.assertEqual(usage_events[-1], {"prompt_tokens": 420, "completion_tokens": 29, "rounds": 2, "context_window": 32000})
 
             saved = [m for m in self.storage.get_messages(bot["id"]) if m["sender"] == "bot"][-1]
             record = saved["raw_payload"]["tool_calls"][0]

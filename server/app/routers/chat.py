@@ -214,6 +214,20 @@ async def _perform_action(
     return {"status": "failed", "error": f"Action failed ({action_name}): {error}", "request": action_request, "gate": verdict}
 
 
+async def _context_window_for(llm_config, model: str) -> Optional[int]:
+    """The model's context length from the catalog, fetching it once if the cache is cold."""
+    if llm_config.provider == "muapi":
+        return None
+    info = openai_compatible_service.cached_model_info(llm_config, model)
+    if info is None:
+        try:
+            catalog = await llm_service.list_models(llm_config)
+        except Exception:  # The catalog is a nicety; a turn must not fail on it.
+            return None
+        info = next((m for m in catalog.models if m.id == model), None)
+    return info.context_length if info is not None else None
+
+
 async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
     """Capture everything a turn needs at start time and return its coroutine.
 
@@ -237,8 +251,7 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
     # Recent bot turns replay their tool calls and results in the provider's
     # native shape, so the model builds on what it already found.
     formatted_history = build_history_messages(history, replay_tools=llm_config.provider != "muapi")
-    model_info = openai_compatible_service.cached_model_info(llm_config, selected_model) if llm_config.provider != "muapi" else None
-    context_window = model_info.context_length if model_info is not None else None
+    context_window = await _context_window_for(llm_config, selected_model)
 
     # Model tool calling is only possible on OpenAI-compatible servers. MUAPI
     # takes a single prompt, so there the slash commands remain the only tools.

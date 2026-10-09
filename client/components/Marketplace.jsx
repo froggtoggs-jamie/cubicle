@@ -48,7 +48,7 @@ const CURATED_APPS = [
   { slug: 'posthog', label: 'PostHog', blurb: 'Analytics and feature flags', domain: 'posthog.com' },
 ];
 
-const LS_KEY = 'open_grok_connected_plugins';
+const LS_KEY = 'cubicle_connected_plugins';
 
 function loadLocalEnabled() {
   try {

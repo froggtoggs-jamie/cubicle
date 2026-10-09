@@ -8,8 +8,8 @@ from app.services.auth_service import auth_service
 from app.services.llm_service import current_llm_config
 
 app = FastAPI(
-    title="Open Grok Bot API",
-    description="FastAPI backend for Open Grok Bot. Talks to any OpenAI-compatible LLM server (OpenRouter, Ollama, LM Studio, llama.cpp, vLLM) or the legacy MUAPI API.",
+    title="Cubicle API",
+    description="FastAPI backend for Cubicle. Talks to any OpenAI-compatible LLM server (OpenRouter, Ollama, LM Studio, llama.cpp, vLLM) or the legacy MUAPI API.",
     version="1.0.0"
 )
 
@@ -70,7 +70,7 @@ async def health_check():
     llm_config = current_llm_config()
     return {
         "status": "online",
-        "service": "Open Grok Bot FastAPI Backend",
+        "service": "Cubicle FastAPI Backend",
         "provider": llm_config.provider,
         "provider_base_url": llm_config.base_url,
         "computer_provider": settings.COMPUTER_PROVIDER,

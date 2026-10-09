@@ -35,7 +35,7 @@ def build_headers(config: LLMConfig) -> Dict[str, str]:
     if config.is_openrouter:
         # Optional attribution headers OpenRouter uses for its rankings page.
         headers["HTTP-Referer"] = "https://github.com/Anil-matcha/open-grok-bot"
-        headers["X-Title"] = "Open Grok Bot"
+        headers["X-Title"] = "Cubicle"
     return headers
 
 

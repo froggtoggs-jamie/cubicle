@@ -3,7 +3,7 @@
 # bottom, hiding whenever a window overlaps it.
 [net/launchpad/plank/docks/dock1]
 alignment='center'
-dock-items=['open-grok-chromium.dockitem', 'open-grok-files.dockitem', 'open-grok-terminal.dockitem']
+dock-items=['cubicle-chromium.dockitem', 'cubicle-files.dockitem', 'cubicle-terminal.dockitem']
 hide-mode='window-dodge'
 icon-size=48
 position='bottom'

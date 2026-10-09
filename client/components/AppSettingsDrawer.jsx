@@ -73,8 +73,9 @@ export default function AppSettingsDrawer({
   useEffect(() => {
     if (isOpen) {
       // Load saved user profile
-      const localName = localStorage.getItem("open_grok_user_name") || "";
-      const localEmail = localStorage.getItem("open_grok_user_email") || "";
+      // Keys were renamed with the project; read the old ones as a fallback.
+      const localName = localStorage.getItem("cubicle_user_name") || localStorage.getItem("open_grok_user_name") || "";
+      const localEmail = localStorage.getItem("cubicle_user_email") || localStorage.getItem("open_grok_user_email") || "";
 
       setUserName(localName);
       setUserEmail(localEmail);
@@ -204,7 +205,7 @@ export default function AppSettingsDrawer({
               value={userName}
               onChange={(e) => {
                 setUserName(e.target.value);
-                localStorage.setItem("open_grok_user_name", e.target.value);
+                localStorage.setItem("cubicle_user_name", e.target.value);
                 if (onProfileUpdate) onProfileUpdate(e.target.value);
               }}
               placeholder="Your name"
@@ -217,7 +218,7 @@ export default function AppSettingsDrawer({
               value={userEmail}
               onChange={(e) => {
                 setUserEmail(e.target.value);
-                localStorage.setItem("open_grok_user_email", e.target.value);
+                localStorage.setItem("cubicle_user_email", e.target.value);
               }}
               placeholder="you@example.com"
               className={inputClass}

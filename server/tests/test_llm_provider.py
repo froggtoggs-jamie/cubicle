@@ -181,7 +181,7 @@ class RequestBuildingTests(unittest.TestCase):
 
         remote = build_headers(_config(base_url="https://openrouter.ai/api/v1"))
         self.assertEqual(remote["Authorization"], "Bearer sk-test")
-        self.assertEqual(remote["X-Title"], "Open Grok Bot")
+        self.assertEqual(remote["X-Title"], "Cubicle")
 
 
 class StreamingTests(unittest.TestCase):

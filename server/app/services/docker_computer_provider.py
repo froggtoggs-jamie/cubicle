@@ -197,11 +197,11 @@ class DockerComputerProvider:
         )
 
     def _container_name(self, record: _RuntimeRecord) -> str:
-        return f"open-grok-computer-{record.status.computer_id[-70:]}"
+        return f"cubicle-computer-{record.status.computer_id[-70:]}"
 
     @staticmethod
     def _volume_name(computer_id: str) -> str:
-        return f"open-grok-computer-ws-{computer_id[-60:]}"
+        return f"cubicle-computer-ws-{computer_id[-60:]}"
 
     def _network_args(self) -> list:
         if self.network:
@@ -226,7 +226,7 @@ class DockerComputerProvider:
         if not self.wallpaper:
             return []
         # Mounted over the image's generated default; start.sh applies it.
-        return ["--mount", f"type=bind,src={self.wallpaper},dst=/opt/open-grok-computer/wallpaper,readonly"]
+        return ["--mount", f"type=bind,src={self.wallpaper},dst=/opt/cubicle-computer/wallpaper,readonly"]
 
     async def _remove_stale_container(self, record: _RuntimeRecord) -> None:
         """Remove a leftover container that still holds this computer's name.
@@ -263,11 +263,11 @@ class DockerComputerProvider:
             "--name",
             self._container_name(record),
             "--label",
-            "open-grok-bot.runtime=computer",
+            "cubicle.runtime=computer",
             "--label",
-            f"open-grok-bot.computer-id={record.status.computer_id}",
+            f"cubicle.computer-id={record.status.computer_id}",
             "--label",
-            f"open-grok-bot.bot-id={record.status.bot_id}",
+            f"cubicle.bot-id={record.status.bot_id}",
             *self._network_args(),
             "--read-only",
             "--tmpfs",

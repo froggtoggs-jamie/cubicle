@@ -44,7 +44,7 @@ export default function Dashboard() {
   const [defaultModel, setDefaultModel] = useState('');
   const [userName, setUserName] = useState(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('open_grok_user_name') || 'You';
+      return localStorage.getItem('cubicle_user_name') || localStorage.getItem('open_grok_user_name') || 'You';
     }
     return 'You';
   });

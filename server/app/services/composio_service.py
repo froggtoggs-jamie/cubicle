@@ -21,6 +21,8 @@ from app.services.storage_service import StorageService, storage_service
 BACKEND_URL = "https://backend.composio.dev/api/v3"
 # Composio scopes connected accounts to a user id. This app has one owner, so
 # one fixed id keeps link creation, status checks, and tool execution aligned.
+# The value predates the rename to Cubicle and is kept on purpose: every
+# connected account in Composio is keyed by it.
 DEFAULT_USER_ID = os.getenv("COMPOSIO_USER_ID", "").strip() or "open-grok-bot-local-user"
 
 GITHUB_LIST_ISSUES_TOOL = "GITHUB_LIST_REPOSITORY_ISSUES"

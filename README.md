@@ -1,6 +1,8 @@
-# Open Grok Bot
+# Cubicle
 
 A local-first AI workspace for creating bot personas, chatting with models from any OpenAI-compatible server (OpenRouter, Ollama, LM Studio, llama.cpp, vLLM, or the OpenAI API), and keeping conversations on your machine. The interface is built with Next.js and React; the API is built with FastAPI and Python.
+
+Cubicle started as a fork of [open-grok-bot](https://github.com/Anil-matcha/open-grok-bot) by Anil Chandra Naidu Matcha and keeps its local-first shape: each bot gets its own cubicle, a sandboxed computer it works in under your approval.
 
 This is an independent open-source project and is not affiliated with xAI.
 
@@ -49,7 +51,7 @@ This is an independent open-source project and is not affiliated with xAI.
 
 ```bash
 git clone https://github.com/Anil-matcha/open-grok-bot.git
-cd open-grok-bot
+cd cubicle
 ```
 
 ### 2. Start the FastAPI server
@@ -112,9 +114,9 @@ The local server creates a mode-0600 session token in `DATA_DIR` and the browser
 The default provider is the deterministic local adapter. To enable the real sandbox desktop (browser, terminal, file manager, input, screenshots, and live VNC), build the pinned runtime image and opt in to the Docker provider:
 
 ```bash
-docker build -t open-grok-bot-computer:2.0.0 ./runtime
+docker build -t cubicle-computer:2.0.0 ./runtime
 export COMPUTER_PROVIDER=docker
-export COMPUTER_DOCKER_IMAGE=open-grok-bot-computer:2.0.0
+export COMPUTER_DOCKER_IMAGE=cubicle-computer:2.0.0
 ```
 
 The Docker daemon must be running before starting the API. Each bot gets a separate container, a separate workspace under `DATA_DIR/computers`, an ephemeral loopback-only port, and an internal runtime token. The container root is read-only, capabilities are dropped, and CPU, memory, process, and shared-memory limits are applied.
@@ -142,7 +144,7 @@ Caddy serves the site only for requests whose hostname or IP matches `SITE_ADDRE
 **HTTPS on a LAN.** With an `https://` address Caddy issues a certificate from its own internal certificate authority for that hostname or IP, so browsers will warn until they trust the root certificate. An IP address works too: browsers send no SNI for bare IPs, and the compose file derives Caddy's `default_sni` from `SITE_ADDRESS` so the handshake still succeeds. Export the root certificate once and install it on each client machine:
 
 ```bash
-docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./open-grok-bot-ca.crt
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./cubicle-ca.crt
 ```
 
 HTTPS is what makes voice dictation work from another machine, since browsers only grant microphone access on secure origins. If you would rather skip certificates, set `SITE_ADDRESS=http://<hostname-or-ip>` and `AUTH_COOKIE_SECURE=0`.
@@ -150,6 +152,8 @@ HTTPS is what makes voice dictation work from another machine, since browsers on
 **Local model servers.** Inside the API container, `localhost` is the container. A server on the Docker host is reachable as `http://host.docker.internal:<port>/v1`; a server on another machine by its LAN address. Enter it in App Settings or as `LLM_BASE_URL` in `.env`.
 
 **Workspace.** `WORKSPACE_DIR` (default `./workspace`) is mounted as the directory the approved workspace tools can read and write. Point it at a project directory on the Docker host to let bots work on real files there.
+
+**Upgrading from Open Grok Bot.** The project was renamed; the API adopts a pre-rename `~/.open-grok-bot` data directory and renames an `open-grok-bot.sqlite3` database in place on first start, sessions are re-established on next login (the cookie name changed), and runtime containers and the compose project are recreated under the new name. Rebuild the runtime image (`docker compose --profile computer build computer`) and remove old sandbox containers with `docker rm -f $(docker ps -aq --filter label=open-grok-bot.runtime=computer)`.
 
 **Data and backups.** The API keeps everything it persists under `/data`: the SQLite database (bots, history, settings with encrypted keys, approvals, audit) and, in volume workspace mode, one folder per sandbox computer. Caddy keeps its internal certificate authority and issued certificates under its own `/data`. By default both are Docker named volumes (`api_data`, `caddy_data`). To keep them in a directory your backups already cover, set `API_DATA_DIR` and `CADDY_DATA_DIR` in `.env` to host paths; the API runs as uid 10001, so make its directory writable by that user (`chown -R 10001:10001 <dir>`). To move an existing installation, stop the stack, copy the volume contents (`docker run --rm -v open-grok-bot_api_data:/from -v <dir>:/to alpine cp -a /from/. /to/`), set the variables, and start it again. `caddy_config` only holds Caddy's last applied config and can stay a volume.
 
@@ -160,12 +164,12 @@ COMPUTER_PROVIDER=docker
 COMPOSE_PROFILES=computer
 ```
 
-This builds the runtime image and starts a `docker-socket-proxy` sidecar on an internal-only network. The API never sees the Docker socket; it talks to the proxy, which only permits the container operations the provider uses (create, start, pause, kill, inspect images). Runtime containers join a dedicated `open-grok-bot-computers` network and are reached by name, so no ports are published for them. Each computer gets a named Docker volume as its workspace. To keep sandbox workspaces on the host instead, set `COMPUTER_DOCKER_WORKSPACE_MODE=bind` and `COMPUTER_DOCKER_HOST_WORKSPACE_ROOT` to the host path of the API's `/data/computers` directory (with `API_DATA_DIR=/srv/open-grok-bot/data` that is `/srv/open-grok-bot/data/computers`). The API creates one folder per computer there and makes it world-writable, because the sandbox runs as a different unprivileged user than the API.
+This builds the runtime image and starts a `docker-socket-proxy` sidecar on an internal-only network. The API never sees the Docker socket; it talks to the proxy, which only permits the container operations the provider uses (create, start, pause, kill, inspect images). Runtime containers join a dedicated `cubicle-computers` network and are reached by name, so no ports are published for them. Each computer gets a named Docker volume as its workspace. To keep sandbox workspaces on the host instead, set `COMPUTER_DOCKER_WORKSPACE_MODE=bind` and `COMPUTER_DOCKER_HOST_WORKSPACE_ROOT` to the host path of the API's `/data/computers` directory (with `API_DATA_DIR=/srv/cubicle/data` that is `/srv/cubicle/data/computers`). The API creates one folder per computer there and makes it world-writable, because the sandbox runs as a different unprivileged user than the API.
 
 Runtime containers are started by the API, not by compose, so `docker compose down` does not remove any that are still running. Stop computers from the UI first, or remove them by label:
 
 ```bash
-docker rm -f $(docker ps -q --filter label=open-grok-bot.runtime=computer)
+docker rm -f $(docker ps -q --filter label=cubicle.runtime=computer)
 ```
 
 The security caveats from the [Optional Docker computer runtime](#optional-docker-computer-runtime) section apply unchanged.
@@ -201,7 +205,7 @@ The server reads these variables from the environment:
 | `AUTH_COOKIE_SECURE` | `0` | Set to `1` when serving over HTTPS |
 | `CORS_ORIGINS` | localhost and loopback client origins | Comma-separated browser origins allowed by the API |
 | `COMPUTER_PROVIDER` | `fake` | Computer adapter: `fake` or `docker` |
-| `COMPUTER_DOCKER_IMAGE` | `open-grok-bot-computer:2.0.0` | Pinned local runtime image |
+| `COMPUTER_DOCKER_IMAGE` | `cubicle-computer:2.0.0` | Pinned local runtime image |
 | `COMPUTER_DOCKER_WORKSPACE_ROOT` | `DATA_DIR/computers` | Root for per-bot runtime workspaces |
 | `COMPUTER_DOCKER_CPU_LIMIT` | `2.0` | Docker CPU limit per computer |
 | `COMPUTER_DOCKER_MEMORY_LIMIT` | `2g` | Docker memory limit per computer |
@@ -422,7 +426,7 @@ npm run lint      # Run the configured Next.js lint command
 Run the focused backend tests with:
 
 ```bash
-DATA_DIR=/tmp/open-grok-bot-test-data PYTHONPATH=server python -m unittest discover -s server/tests -v
+DATA_DIR=/tmp/cubicle-test-data PYTHONPATH=server python -m unittest discover -s server/tests -v
 ```
 
 When changing an API contract, update the Pydantic schema, router, client helper, tests, and this README together.
@@ -447,7 +451,7 @@ Confirm that the daemon is running, the runtime image was built, and the API use
 
 ```bash
 docker info
-docker image inspect open-grok-bot-computer:2.0.0
+docker image inspect cubicle-computer:2.0.0
 echo "$COMPUTER_PROVIDER"
 ```
 

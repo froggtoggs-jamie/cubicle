@@ -53,7 +53,8 @@ class StorageService:
         self.approvals_file = self.data_dir / "approvals.json"
         self.audit_file = self.data_dir / "audit.json"
 
-        self.db_path = self.data_dir / "open-grok-bot.sqlite3"
+        self.db_path = self.data_dir / "cubicle.sqlite3"
+        self._adopt_legacy_database()
         self.database = Database(self.db_path)
         self.secret_store = SecretStore(self.data_dir)
         self._migrate_legacy_json()
@@ -293,6 +294,18 @@ class StorageService:
 
         if self._count("settings") == 0:
             self.save_settings(self._default_settings())
+
+    def _adopt_legacy_database(self) -> None:
+        """Rename an open-grok-bot.sqlite3 left by the pre-rename app."""
+        if self.db_path.exists():
+            return
+        legacy = self.data_dir / "open-grok-bot.sqlite3"
+        if not legacy.exists():
+            return
+        for suffix in ("", "-wal", "-shm"):
+            source = legacy.with_name(legacy.name + suffix)
+            if source.exists():
+                source.rename(self.db_path.with_name(self.db_path.name + suffix))
 
     def get_bots(self) -> List[Dict[str, Any]]:
         with self.database.connect() as connection:

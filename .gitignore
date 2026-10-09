@@ -24,6 +24,7 @@ server/app/services/__pycache__/
 .env.local
 .env*.local
 *.log
+.cubicle/
 .open-grok-bot/
 *.sqlite3
 *.sqlite3-wal

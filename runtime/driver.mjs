@@ -30,7 +30,7 @@ const height = Number(process.env.VIEWPORT_HEIGHT || 720);
 const display = process.env.DISPLAY || ':1';
 const vncPort = 5900;
 const CDP_PORT = Number(process.env.CHROME_CDP_PORT || 9222);
-const CHROME_DESKTOP_FILE = '/usr/share/applications/open-grok-chromium.desktop';
+const CHROME_DESKTOP_FILE = '/usr/share/applications/cubicle-chromium.desktop';
 
 let browser = null;
 let context = null;

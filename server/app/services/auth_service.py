@@ -13,7 +13,7 @@ from app.config import settings
 
 LOCAL_USER_ID = "local-user"
 LOCAL_USERNAME = "local"
-SESSION_COOKIE = "open_grok_session"
+SESSION_COOKIE = "cubicle_session"
 
 
 class AuthService:

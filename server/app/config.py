@@ -12,6 +12,15 @@ def _resolve_llm_provider() -> str:
     return "openai_compatible"
 
 
+def _default_data_dir() -> str:
+    """~/.cubicle, unless only the pre-rename ~/.open-grok-bot exists."""
+    new = Path.home() / ".cubicle"
+    legacy = Path.home() / ".open-grok-bot"
+    if not new.exists() and legacy.exists():
+        return str(legacy)
+    return str(new)
+
+
 class Settings:
     # Any OpenAI-compatible chat completions server (OpenRouter, Ollama,
     # LM Studio, llama.cpp, vLLM, ...) or the legacy MUAPI prediction API.
@@ -42,7 +51,7 @@ class Settings:
         "grok-4-5" if LLM_PROVIDER == "muapi" else "x-ai/grok-4.5"
     )
     DATA_DIR: Path = Path(
-        os.getenv("DATA_DIR", str(Path.home() / ".open-grok-bot"))
+        os.getenv("DATA_DIR") or _default_data_dir()
     ).expanduser().resolve()
     WORKSPACE_ROOT: Path = Path(
         os.getenv("WORKSPACE_ROOT", str(Path(__file__).resolve().parents[2]))
@@ -57,7 +66,7 @@ class Settings:
     AUTH_COOKIE_SECURE: bool = os.getenv("AUTH_COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
     COMPUTER_PROVIDER: str = os.getenv("COMPUTER_PROVIDER", "fake").strip().lower()
     COMPUTER_DOCKER_IMAGE: str = os.getenv(
-        "COMPUTER_DOCKER_IMAGE", "open-grok-bot-computer:2.0.0"
+        "COMPUTER_DOCKER_IMAGE", "cubicle-computer:2.0.0"
     ).strip()
     COMPUTER_DOCKER_BINARY: str = os.getenv("COMPUTER_DOCKER_BINARY", "docker").strip()
     COMPUTER_DOCKER_WORKSPACE_ROOT: Path = Path(

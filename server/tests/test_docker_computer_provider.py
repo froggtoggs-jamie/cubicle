@@ -31,7 +31,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp_dir.name)
         self.docker = FakeDockerCommand()
         self.provider = DockerComputerProvider(
-            image="open-grok-bot-computer:test",
+            image="cubicle-computer:test",
             workspace_root=self.root / "computers",
             seccomp_profile=self.root / "missing-seccomp.json",
             start_timeout=0.5,
@@ -125,16 +125,16 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
 
         first = self.docker.calls[0][0]
         self.assertEqual(first[:2], ("rm", "-f"))
-        self.assertEqual(first[2], f"open-grok-computer-{status.computer_id[-70:]}")
+        self.assertEqual(first[2], f"cubicle-computer-{status.computer_id[-70:]}")
         self.assertEqual(self.docker.calls[1][0][0], "run")
 
     async def test_network_mode_joins_a_docker_network_instead_of_publishing(self):
         provider = DockerComputerProvider(
-            image="open-grok-bot-computer:test",
+            image="cubicle-computer:test",
             workspace_root=self.root / "computers",
             seccomp_profile=self.root / "missing-seccomp.json",
             start_timeout=0.5,
-            network="open-grok-bot-computers",
+            network="cubicle-computers",
             docker_command=self.docker,
         )
         status = provider.get_or_create("bot-net")
@@ -147,16 +147,16 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
 
         run_args = self.docker.run_args()
         self.assertIn("--network", run_args)
-        self.assertIn("open-grok-bot-computers", run_args)
+        self.assertIn("cubicle-computers", run_args)
         self.assertNotIn("--publish", run_args)
         self.assertNotIn("port", [call[0][0] for call in self.docker.calls])
 
         record = provider._runtimes[status.computer_id]
-        self.assertEqual(record.host, f"open-grok-computer-{status.computer_id[-70:]}")
+        self.assertEqual(record.host, f"cubicle-computer-{status.computer_id[-70:]}")
         self.assertEqual(record.port, 3000)
         self.assertEqual(
             provider._runtime_url(record, "/health"),
-            f"http://open-grok-computer-{status.computer_id[-70:]}:3000/health",
+            f"http://cubicle-computer-{status.computer_id[-70:]}:3000/health",
         )
 
         await provider.stop(status.computer_id)
@@ -180,7 +180,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_volume_workspace_mode_mounts_a_named_volume(self):
         provider = DockerComputerProvider(
-            image="open-grok-bot-computer:test",
+            image="cubicle-computer:test",
             workspace_root=self.root / "computers",
             seccomp_profile=self.root / "missing-seccomp.json",
             start_timeout=0.5,
@@ -198,16 +198,16 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         run_args = self.docker.run_args()
         mount = run_args[run_args.index("--mount") + 1]
         self.assertEqual(
-            mount, f"type=volume,src=open-grok-computer-ws-{status.computer_id[-60:]},dst=/workspace"
+            mount, f"type=volume,src=cubicle-computer-ws-{status.computer_id[-60:]},dst=/workspace"
         )
 
     async def test_bind_mode_translates_to_the_host_path_when_configured(self):
         provider = DockerComputerProvider(
-            image="open-grok-bot-computer:test",
+            image="cubicle-computer:test",
             workspace_root=self.root / "computers",
             seccomp_profile=self.root / "missing-seccomp.json",
             start_timeout=0.5,
-            host_workspace_root="/srv/open-grok-bot/computers",
+            host_workspace_root="/srv/cubicle/computers",
             docker_command=self.docker,
         )
         status = provider.get_or_create("bot-bind")
@@ -222,7 +222,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         mount = run_args[run_args.index("--mount") + 1]
         self.assertTrue(mount.startswith("type=bind,src="))
         self.assertIn(status.computer_id, mount)
-        self.assertIn("open-grok-bot", mount.replace("\\", "/"))
+        self.assertIn("cubicle", mount.replace("\\", "/"))
         self.assertNotIn(str(self.root), mount)
         self.assertTrue(mount.endswith(",dst=/workspace"))
 
@@ -267,7 +267,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_configured_wallpaper_is_mounted_read_only_over_the_default(self):
         provider = DockerComputerProvider(
-            image="open-grok-bot-computer:test",
+            image="cubicle-computer:test",
             workspace_root=self.root / "computers",
             seccomp_profile=self.root / "missing-seccomp.json",
             start_timeout=0.5,
@@ -282,7 +282,7 @@ class DockerComputerProviderTests(unittest.IsolatedAsyncioTestCase):
         provider._wait_until_ready = ready
         await provider.start(status.computer_id)
         run_args = self.docker.run_args()
-        self.assertIn("type=bind,src=/srv/wallpaper.jpg,dst=/opt/open-grok-computer/wallpaper,readonly", run_args)
+        self.assertIn("type=bind,src=/srv/wallpaper.jpg,dst=/opt/cubicle-computer/wallpaper,readonly", run_args)
 
         # Without a wallpaper nothing extra is mounted.
         plain = [a for a in self.docker.run_args() if "wallpaper" in a]

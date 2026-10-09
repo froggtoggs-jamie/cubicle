@@ -1,9 +1,15 @@
 """Docker-backed Playwright computer provider.
 
 Each bot receives one short-lived container with a private browser context,
-one writable workspace mount, a loopback-only ephemeral port, and an internal
-token. The host API is the only component that knows the token or container
-id; callers continue to use the provider-neutral computer contract.
+one writable workspace mount, and an internal token. The host API is the only
+component that knows the token or container id; callers continue to use the
+provider-neutral computer contract.
+
+Two connection layouts are supported. When the API runs directly on the Docker
+host, each container publishes an ephemeral port on 127.0.0.1. When the API is
+itself a container (docker compose), `COMPUTER_DOCKER_NETWORK` names a Docker
+network that runtime containers join, and they are reached by container name
+without publishing any port.
 """
 
 from __future__ import annotations
@@ -26,6 +32,9 @@ from app.services.computer_provider import (
     ComputerProviderError,
     ComputerStatus,
     computer_id_for_bot,
+    require_bot_control,
+    validate_control_owner,
+    validate_takeover_reason,
 )
 
 
@@ -42,7 +51,9 @@ class _RuntimeRecord:
     token: str
     workspace: Path
     container_id: Optional[str] = None
+    host: Optional[str] = None
     port: Optional[int] = None
+    volume: Optional[str] = None
 
 
 class DockerComputerProvider:
@@ -63,6 +74,10 @@ class DockerComputerProvider:
         command_timeout: Optional[float] = None,
         runtime_port: Optional[int] = None,
         seccomp_profile: Optional[Path] = None,
+        network: Optional[str] = None,
+        workspace_mode: Optional[str] = None,
+        host_workspace_root: Optional[str] = None,
+        wallpaper: Optional[str] = None,
         docker_command: Optional[DockerCommand] = None,
     ):
         self.docker_binary = docker_binary or settings.COMPUTER_DOCKER_BINARY
@@ -75,6 +90,17 @@ class DockerComputerProvider:
         self.command_timeout = command_timeout or settings.COMPUTER_DOCKER_COMMAND_TIMEOUT
         self.runtime_port = runtime_port or settings.COMPUTER_DOCKER_RUNTIME_PORT
         self.seccomp_profile = (seccomp_profile or settings.COMPUTER_DOCKER_SECCOMP_PROFILE).expanduser().resolve()
+        self.network = (network if network is not None else settings.COMPUTER_DOCKER_NETWORK).strip()
+        mode = (workspace_mode or settings.COMPUTER_DOCKER_WORKSPACE_MODE or "bind").strip().lower()
+        if mode not in {"bind", "volume"}:
+            raise ValueError(f"Unsupported computer workspace mode: {mode}")
+        self.workspace_mode = mode
+        self.host_workspace_root = (
+            host_workspace_root
+            if host_workspace_root is not None
+            else settings.COMPUTER_DOCKER_HOST_WORKSPACE_ROOT
+        ).strip()
+        self.wallpaper = (wallpaper if wallpaper is not None else settings.COMPUTER_DOCKER_WALLPAPER).strip()
         self._docker_command = docker_command or self._run_docker
         self._runtimes: Dict[str, _RuntimeRecord] = {}
         self._lock = asyncio.Lock()
@@ -91,7 +117,7 @@ class DockerComputerProvider:
             height=720,
             fps=10,
             generation=generation,
-            capabilities=COMPUTER_CAPABILITIES,
+            capabilities=COMPUTER_CAPABILITIES + ("vnc",),
             updated_at=_now(),
         )
 
@@ -116,12 +142,13 @@ class DockerComputerProvider:
         if self.workspace_root not in workspace.parents:
             raise ComputerProviderError("The computer workspace escaped its configured root.")
         workspace.mkdir(parents=True, exist_ok=True)
-        workspace.chmod(0o700)
+        self._set_workspace_permissions(workspace)
         status = self._new_status(bot_id, generation=1)
         self._runtimes[computer_id] = _RuntimeRecord(
             status=status,
             token=secrets.token_urlsafe(32),
             workspace=workspace,
+            volume=self._volume_name(computer_id) if self.workspace_mode == "volume" else None,
         )
         return status
 
@@ -137,7 +164,7 @@ class DockerComputerProvider:
             raise ComputerProviderError(
                 f"Computer is not active; current state is {record.status.state}."
             )
-        if not record.container_id or not record.port:
+        if not record.container_id or not record.port or not record.host:
             raise ComputerProviderError("Computer runtime connection is unavailable.")
         return record
 
@@ -172,8 +199,62 @@ class DockerComputerProvider:
     def _container_name(self, record: _RuntimeRecord) -> str:
         return f"open-grok-computer-{record.status.computer_id[-70:]}"
 
+    @staticmethod
+    def _volume_name(computer_id: str) -> str:
+        return f"open-grok-computer-ws-{computer_id[-60:]}"
+
+    def _network_args(self) -> list:
+        if self.network:
+            return ["--network", self.network]
+        return ["--publish", f"127.0.0.1::{self.runtime_port}"]
+
+    def _workspace_mount(self, record: _RuntimeRecord) -> str:
+        if self.workspace_mode == "volume":
+            return f"type=volume,src={record.volume},dst=/workspace"
+        source = record.workspace
+        if self.host_workspace_root:
+            # The daemon resolves bind sources on the host, so translate the
+            # path the API sees into the equivalent host path.
+            source = Path(self.host_workspace_root) / record.workspace.name
+        return f"type=bind,src={source},dst=/workspace"
+
+    @staticmethod
+    def _runtime_url(record: _RuntimeRecord, route: str) -> str:
+        return f"http://{record.host}:{record.port}{route}"
+
+    def _wallpaper_args(self) -> list:
+        if not self.wallpaper:
+            return []
+        # Mounted over the image's generated default; start.sh applies it.
+        return ["--mount", f"type=bind,src={self.wallpaper},dst=/opt/open-grok-computer/wallpaper,readonly"]
+
+    async def _remove_stale_container(self, record: _RuntimeRecord) -> None:
+        """Remove a leftover container that still holds this computer's name.
+
+        The API keeps runtime records in memory, so after a restart a sandbox
+        started by the previous process is unknown to it (and its token is
+        gone). Without this, `docker run --name` fails with a name conflict
+        and the computer is stuck in the error state until someone cleans up
+        by hand.
+        """
+        try:
+            await self._docker(["rm", "-f", self._container_name(record)])
+        except ComputerProviderError:
+            pass  # Nothing with that name exists; that is the normal case.
+
+    def _set_workspace_permissions(self, workspace: Path) -> None:
+        # In bind mode the directory is shared with the sandbox, which runs
+        # as its own unprivileged user (not the API's), so it must be
+        # writable across users. In volume mode it is private to the API.
+        try:
+            workspace.chmod(0o777 if self.workspace_mode == "bind" else 0o700)
+        except OSError:
+            pass  # Some filesystems (and Windows) do not support this; not fatal.
+
     async def _launch(self, record: _RuntimeRecord) -> None:
         record.workspace.mkdir(parents=True, exist_ok=True)
+        self._set_workspace_permissions(record.workspace)
+        await self._remove_stale_container(record)
         args = [
             "run",
             "-d",
@@ -187,15 +268,17 @@ class DockerComputerProvider:
             f"open-grok-bot.computer-id={record.status.computer_id}",
             "--label",
             f"open-grok-bot.bot-id={record.status.bot_id}",
-            "--publish",
-            f"127.0.0.1::{self.runtime_port}",
+            *self._network_args(),
             "--read-only",
             "--tmpfs",
             "/tmp:rw,nosuid,size=512m",
+            # uid/gid match the image's pwuser so the sandbox user can write to
+            # its own home directory (npm, pip, and desktop config need it).
             "--tmpfs",
-            "/home/pwuser:rw,nosuid,size=1g",
+            "/home/pwuser:rw,nosuid,size=1g,uid=1001,gid=1001",
             "--mount",
-            f"type=bind,src={record.workspace},dst=/workspace",
+            self._workspace_mount(record),
+            *self._wallpaper_args(),
             "--cpus",
             self.cpu_limit,
             "--memory",
@@ -229,14 +312,23 @@ class DockerComputerProvider:
             raise ComputerProviderError("Docker did not return a computer container id.")
         record.container_id = container_id
 
+        if self.network:
+            # On a user-defined network the container name resolves through
+            # Docker's embedded DNS, so nothing is published.
+            record.host = self._container_name(record)
+            record.port = self.runtime_port
+            return
+
         ports = await self._docker(["port", container_id, f"{self.runtime_port}/tcp"])
         matches = re.findall(r":(\d+)", ports)
         if not matches:
             raise ComputerProviderError("Docker did not publish a computer runtime port.")
+        record.host = "127.0.0.1"
         record.port = int(matches[-1])
 
     async def _remove_container(self, record: _RuntimeRecord, suppress_errors: bool = True) -> None:
         if not record.container_id:
+            record.host = None
             record.port = None
             return
         container_id = record.container_id
@@ -247,6 +339,7 @@ class DockerComputerProvider:
                 raise
         finally:
             record.container_id = None
+            record.host = None
             record.port = None
 
     async def _request(
@@ -256,9 +349,9 @@ class DockerComputerProvider:
         route: str,
         payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        if not record.port:
+        if not record.port or not record.host:
             raise ComputerProviderError("Computer runtime is not connected.")
-        url = f"http://127.0.0.1:{record.port}{route}"
+        url = self._runtime_url(record, route)
         try:
             async with httpx.AsyncClient(
                 timeout=max(2.0, min(self.command_timeout, 60.0)),
@@ -378,6 +471,7 @@ class DockerComputerProvider:
 
     async def browser_navigate(self, computer_id: str, url: str) -> Dict[str, Any]:
         record = self._active_record(computer_id)
+        require_bot_control(record.status)
         if not isinstance(url, str) or len(url.strip()) > 2048:
             raise ComputerProviderError("A browser URL is required and must be at most 2048 characters.")
         parsed = urlparse(url.strip())
@@ -430,11 +524,41 @@ class DockerComputerProvider:
 
     async def send_input(self, computer_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         record = self._active_record(computer_id)
+        require_bot_control(record.status)
         if not isinstance(event, dict):
             raise ComputerProviderError("Computer input must be a JSON object.")
         result = await self._request(record, "POST", "/input", {"event": event})
         self._touch(record.status, "input")
         return {"computer_id": computer_id, "provider": self.provider_name, **result}
+
+    async def set_control(self, computer_id: str, owner: str) -> ComputerStatus:
+        record = self._record_for(computer_id)
+        record.status.controlled_by = validate_control_owner(owner)
+        if record.status.controlled_by == "bot":
+            record.status.takeover_request = None
+        return self._touch(record.status, "control")
+
+    async def request_takeover(self, computer_id: str, reason: str) -> Dict[str, Any]:
+        record = self._active_record(computer_id)
+        record.status.takeover_request = {"reason": validate_takeover_reason(reason), "requested_at": _now()}
+        self._touch(record.status, "takeover.request")
+        return {
+            "computer_id": computer_id,
+            "provider": self.provider_name,
+            "operation": "takeover.request",
+            "requested": True,
+            "reason": record.status.takeover_request["reason"],
+            "controlled_by": record.status.controlled_by,
+            "next": "Tell the user what to do and end your turn; they will message you when they hand control back.",
+        }
+
+    def vnc_target(self, computer_id: str) -> Optional[Dict[str, Any]]:
+        record = self._runtimes.get(computer_id)
+        if record is None or record.status.state not in {"running", "paused"}:
+            return None
+        if not record.host or not record.port or not record.container_id:
+            return None
+        return {"host": record.host, "port": record.port, "token": record.token}
 
     async def cleanup(self, computer_id: str) -> Dict[str, Any]:
         async with self._lock:

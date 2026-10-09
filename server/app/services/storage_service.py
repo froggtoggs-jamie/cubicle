@@ -13,14 +13,23 @@ from app.services.database import Database
 from app.services.secret_store import SecretStore, SecretStoreError
 
 
-SECRET_KEYS = {"muapi_api_key", "composio_api_key", "composio_key"}
+# `muapi_*` keys are the pre-provider-abstraction names. They are still
+# accepted so legacy JSON imports and old databases keep working, and are
+# copied into the `llm_*` keys once by `_migrate_legacy_llm_settings`.
+LEGACY_LLM_KEYS = {"muapi_api_key", "muapi_base_url"}
+SECRET_KEYS = {"llm_api_key", "muapi_api_key", "composio_api_key", "composio_key"}
 SETTING_KEYS = {
+    "llm_provider",
+    "llm_api_key",
+    "llm_base_url",
+    "llm_reasoning_effort",
     "muapi_api_key",
     "muapi_base_url",
     "composio_api_key",
     "composio_key",
     "default_model",
     "theme",
+    "disabled_toolkits",
 }
 
 
@@ -48,17 +57,51 @@ class StorageService:
         self.database = Database(self.db_path)
         self.secret_store = SecretStore(self.data_dir)
         self._migrate_legacy_json()
+        self._migrate_legacy_llm_settings()
         self._ensure_defaults()
 
     @staticmethod
     def _default_settings() -> Dict[str, Any]:
         return {
-            "muapi_api_key": settings.MUAPI_API_KEY,
-            "muapi_base_url": settings.MUAPI_BASE_URL,
+            "llm_provider": settings.LLM_PROVIDER,
+            "llm_api_key": settings.LLM_API_KEY,
+            "llm_base_url": settings.LLM_BASE_URL,
+            "llm_reasoning_effort": settings.LLM_REASONING_EFFORT,
             "composio_api_key": settings.COMPOSIO_API_KEY,
             "default_model": settings.DEFAULT_MODEL,
             "theme": "dark",
         }
+
+    def _stored_setting_keys(self) -> set:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT key FROM settings WHERE owner_id = ?", (self.owner_id,)
+            ).fetchall()
+        return {row[0] for row in rows}
+
+    def _migrate_legacy_llm_settings(self) -> None:
+        """Copy a saved MUAPI key into the provider-neutral settings once.
+
+        A database that only has `muapi_api_key` belongs to someone who was
+        using MUAPI, so the provider is pinned to `muapi` for them. Fresh
+        installs never enter this branch and default to OpenAI-compatible.
+        """
+        if self.database.get_meta("llm_settings_migrated") == "1":
+            return
+        stored = self._stored_setting_keys()
+        if "llm_api_key" not in stored and "muapi_api_key" in stored:
+            current = self.get_settings()
+            legacy_key = str(current.get("muapi_api_key") or "")
+            if legacy_key:
+                migrated = {
+                    "llm_provider": "muapi",
+                    "llm_api_key": legacy_key,
+                    "llm_base_url": str(
+                        current.get("muapi_base_url") or "https://api.muapi.ai/api/v1"
+                    ),
+                }
+                self.save_settings(migrated)
+        self.database.set_meta("llm_settings_migrated", "1")
 
     @staticmethod
     def _write_json(path: Path, data: Any):
@@ -163,6 +206,13 @@ class StorageService:
         self.database.set_meta("legacy_json_imported", "1")
 
     def _ensure_defaults(self) -> None:
+        # MUAPI has its own slugs for these personas. Any other provider seeds
+        # every bot with the configured default so the first chat works.
+        if settings.LLM_PROVIDER == "muapi":
+            seed_models = {"claude": "claude-sonnet-4-5", "codex": "gpt-5-mini"}
+        else:
+            seed_models = {"claude": settings.DEFAULT_MODEL, "codex": settings.DEFAULT_MODEL}
+
         if self._count("bots") == 0:
             self.save_bots(
                 [
@@ -170,9 +220,9 @@ class StorageService:
                         "id": "bot-grok-1",
                         "name": "Grok 4.5 Analyst",
                         "role": "Real-time Reasoning & Intelligence",
-                        "description": "Powered by MUAPI grok-4-5 model. Deep analysis, real-time web intelligence, & precise technical problem solving.",
+                        "description": f"Powered by the {settings.DEFAULT_MODEL} model. Deep analysis, real-time web intelligence, & precise technical problem solving.",
                         "avatar": "🚀",
-                        "model": "grok-4-5",
+                        "model": settings.DEFAULT_MODEL,
                         "accent_color": "#3b82f6",
                         "system_prompt": "You are Grok 4.5, an advanced AI analyst. Provide direct, highly accurate, and helpful answers with real-time insight.",
                         "tools": ["web_search", "code_interpreter", "computer_preview"],
@@ -186,7 +236,7 @@ class StorageService:
                         "role": "Full-Stack Code & Refactoring",
                         "description": "Specialized in software design, clean architectural patterns, and elegant React/Next.js code.",
                         "avatar": "⚡",
-                        "model": "claude-sonnet-4-5",
+                        "model": seed_models["claude"],
                         "accent_color": "#d97757",
                         "system_prompt": "You are Claude Architect, an expert software engineer. Write clean, modular, modern code.",
                         "tools": ["file_editor", "terminal"],
@@ -200,7 +250,7 @@ class StorageService:
                         "role": "Automated Execution & Workflows",
                         "description": "Executes shell tasks, runs automated builds, and manages local computer environment.",
                         "avatar": "💻",
-                        "model": "gpt-5-mini",
+                        "model": seed_models["codex"],
                         "accent_color": "#10b981",
                         "system_prompt": "You are Codex Builder, a devops and execution specialist. Help run commands safely.",
                         "tools": ["terminal", "approval_broker"],
@@ -214,7 +264,7 @@ class StorageService:
                         "role": "General Assistant & App Connector",
                         "description": "Friendly assistant connected to the app marketplace (Slack, Gmail, GitHub).",
                         "avatar": "🐭",
-                        "model": "grok-4-5",
+                        "model": settings.DEFAULT_MODEL,
                         "accent_color": "#a855f7",
                         "system_prompt": "You are a super-powered assistant. Be friendly, fast, and proactive.",
                         "tools": ["composio_apps", "dictation"],
@@ -233,9 +283,9 @@ class StorageService:
                         "thread_id": "bot-grok-1",
                         "bot_id": "bot-grok-1",
                         "sender": "bot",
-                        "text": "Hello! I am **Grok 4.5 Analyst**, running via MUAPI endpoints. Ask me anything, or give me a task to analyze!",
+                        "text": "Hello! I am **Grok 4.5 Analyst**. Ask me anything, or give me a task to analyze!",
                         "created_at": datetime.now().isoformat(),
-                        "model": "grok-4-5",
+                        "model": settings.DEFAULT_MODEL,
                         "item_type": "assistant_text",
                     }
                 ]
@@ -287,6 +337,15 @@ class StorageService:
                 "INSERT OR REPLACE INTO messages(id, thread_id, owner_id, payload) VALUES (?, ?, ?, ?)",
                 (message_id, thread_id, self.owner_id, json.dumps(message)),
             )
+
+    def delete_messages(self, thread_id: str) -> int:
+        """Remove every message in a thread; returns how many were deleted."""
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM messages WHERE owner_id = ? AND thread_id = ?",
+                (self.owner_id, thread_id),
+            )
+            return cursor.rowcount if cursor.rowcount is not None else 0
 
     def save_messages(self, messages: List[Dict[str, Any]]):
         with self.database.connect() as connection:

@@ -160,6 +160,27 @@ class ComputerGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event_names.count("action.requested"), 2)
         self.assertIn("action.completed", event_names)
 
+    async def test_operations_start_a_stopped_computer_on_demand(self):
+        status = self.provider.get_or_create("bot-cold")
+        self.assertEqual(status.state, "stopped")
+        call = ActionInvocation(
+            name="computer.terminal_execute",
+            arguments={"bot_id": "bot-cold", "command": "echo hi"},
+            target={"bot_id": "bot-cold"},
+            preview="Run a terminal command on the bot computer",
+        )
+        request, _ = self.gateway.open("computer:bot-cold", "bot-cold", call)
+        await self.gateway.wait_for_decision(request)
+        result = await self.gateway.execute(request)
+        self.assertEqual(result.status, "completed")
+        self.assertTrue(result.result["computer_auto_started"])
+        self.assertEqual(self.provider.get_or_create("bot-cold").state, "running")
+
+        # Already running: no flag.
+        again, _ = self.gateway.open("computer:bot-cold", "bot-cold", call)
+        await self.gateway.wait_for_decision(again)
+        self.assertNotIn("computer_auto_started", (await self.gateway.execute(again)).result)
+
 
 class ComputerRouterTests(unittest.IsolatedAsyncioTestCase):
     @unittest.skipIf(app is None, "FastAPI dependencies are not installed")

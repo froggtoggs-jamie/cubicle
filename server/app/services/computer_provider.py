@@ -26,7 +26,12 @@ COMPUTER_CAPABILITIES: Tuple[str, ...] = (
     "screenshot",
     "input",
     "cleanup",
+    # Who holds the mouse and keyboard, and the bot asking for a human.
+    "control",
+    "takeover",
 )
+
+ControlOwner = Literal["bot", "user"]
 
 
 def _now() -> str:
@@ -64,6 +69,12 @@ class ComputerStatus:
     frame_id: Optional[str] = None
     url: Optional[str] = None
     last_operation: Optional[str] = None
+    # "bot" by default. While "user", the bot's pointer/keyboard/navigation
+    # actions are refused so the two do not fight over the same desktop.
+    controlled_by: str = "bot"
+    # Set when the bot asked the user to take over; cleared when control
+    # returns to the bot.
+    takeover_request: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -119,6 +130,38 @@ class ComputerProvider(Protocol):
 
     async def cleanup(self, computer_id: str) -> Dict[str, Any]:
         ...
+
+    async def set_control(self, computer_id: str, owner: str) -> ComputerStatus:
+        ...
+
+    async def request_takeover(self, computer_id: str, reason: str) -> Dict[str, Any]:
+        ...
+
+    def vnc_target(self, computer_id: str) -> Optional[Dict[str, Any]]:
+        """Where the API can bridge a live VNC session, or None if unavailable."""
+        ...
+
+
+def validate_control_owner(owner: Any) -> str:
+    value = str(owner or "").strip().lower()
+    if value not in {"bot", "user"}:
+        raise ComputerProviderError("Control owner must be 'bot' or 'user'.")
+    return value
+
+
+def validate_takeover_reason(reason: Any) -> str:
+    value = str(reason or "").strip()
+    if not value:
+        raise ComputerProviderError("A reason for the takeover request is required.")
+    return value[:500]
+
+
+def require_bot_control(status: "ComputerStatus") -> None:
+    if status.controlled_by == "user":
+        raise ComputerProviderError(
+            "The user currently has control of the computer. Wait for them to hand it back "
+            "(they will tell you), or ask them to."
+        )
 
 
 class FakeComputerProvider:
@@ -246,6 +289,7 @@ class FakeComputerProvider:
 
     async def browser_navigate(self, computer_id: str, url: str) -> Dict[str, Any]:
         status = self._require_active(computer_id)
+        require_bot_control(status)
         if not isinstance(url, str) or len(url.strip()) > 2048:
             raise ComputerProviderError("A browser URL is required and must be at most 2048 characters.")
         parsed = urlparse(url.strip())
@@ -324,6 +368,7 @@ class FakeComputerProvider:
 
     async def send_input(self, computer_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         status = self._require_active(computer_id)
+        require_bot_control(status)
         if not isinstance(event, dict):
             raise ComputerProviderError("Computer input must be a JSON object.")
         event_type = str(event.get("type") or "").lower()
@@ -349,6 +394,30 @@ class FakeComputerProvider:
             "state": "cleaned",
             "generation": status.generation,
         }
+
+    async def set_control(self, computer_id: str, owner: str) -> ComputerStatus:
+        status = self._get(computer_id)
+        status.controlled_by = validate_control_owner(owner)
+        if status.controlled_by == "bot":
+            status.takeover_request = None
+        return self._touch(status, "control")
+
+    async def request_takeover(self, computer_id: str, reason: str) -> Dict[str, Any]:
+        status = self._require_active(computer_id)
+        status.takeover_request = {"reason": validate_takeover_reason(reason), "requested_at": _now()}
+        self._touch(status, "takeover.request")
+        return {
+            "computer_id": status.computer_id,
+            "provider": self.provider_name,
+            "operation": "takeover.request",
+            "requested": True,
+            "reason": status.takeover_request["reason"],
+            "controlled_by": status.controlled_by,
+            "next": "Tell the user what to do and end your turn; they will message you when they hand control back.",
+        }
+
+    def vnc_target(self, computer_id: str) -> Optional[Dict[str, Any]]:
+        return None
 
 
 def build_computer_provider() -> ComputerProvider:

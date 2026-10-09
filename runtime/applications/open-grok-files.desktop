@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Files
+Comment=File manager
+Exec=thunar /workspace
+Icon=system-file-manager
+Terminal=false
+StartupNotify=false
+StartupWMClass=Thunar
+Categories=System;FileManager;

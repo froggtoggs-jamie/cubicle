@@ -1,0 +1,16 @@
+# GSettings keyfile backend (GSETTINGS_BACKEND=keyfile in start.sh). Plank
+# reads its dock configuration from here: three pinned apps, centred at the
+# bottom, hiding whenever a window overlaps it.
+[net/launchpad/plank/docks/dock1]
+alignment='center'
+dock-items=['open-grok-chromium.dockitem', 'open-grok-files.dockitem', 'open-grok-terminal.dockitem']
+hide-mode='window-dodge'
+icon-size=48
+position='bottom'
+show-dock-item=false
+pinned-only=true
+theme='Transparent'
+zoom-enabled=true
+zoom-percent=130
+unhide-delay=0
+hide-delay=0

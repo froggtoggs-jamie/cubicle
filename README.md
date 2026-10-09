@@ -1,6 +1,6 @@
 # Open Grok Bot
 
-A local-first AI workspace for creating bot personas, chatting with models exposed through MUAPI, and keeping conversations on your machine. The interface is built with Next.js and React; the API is built with FastAPI and Python.
+A local-first AI workspace for creating bot personas, chatting with models from any OpenAI-compatible server (OpenRouter, Ollama, LM Studio, llama.cpp, vLLM, or the OpenAI API), and keeping conversations on your machine. The interface is built with Next.js and React; the API is built with FastAPI and Python.
 
 This is an independent open-source project and is not affiliated with xAI.
 
@@ -10,29 +10,32 @@ This is an independent open-source project and is not affiliated with xAI.
 
 ## Related Projects
 
-- [MuAPI](https://muapi.ai) — Unified API used by this workspace for model responses and image uploads.
-- [MuAPI API reference](https://muapi.ai/docs/api-reference) — Endpoint and prediction lifecycle documentation for the provider service.
-- [MuAPI access keys](https://muapi.ai/access-keys) — Create the API key used by the live-model configuration.
+- [OpenRouter](https://openrouter.ai) — Default hosted provider; one key for hundreds of models behind an OpenAI-compatible API.
+- [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), [llama.cpp server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server) — Local servers that expose the same API and work without a key.
+- [MuAPI](https://muapi.ai) — The original provider, still supported as the legacy `muapi` option ([API reference](https://muapi.ai/docs/api-reference), [access keys](https://muapi.ai/access-keys)).
 - [awesome-meta-muse-agent](https://github.com/Anil-matcha/awesome-meta-muse-agent) — copy-paste Muse agent briefs for practical workflows, connectors, and approval boundaries.
 - [awesome-grok-bot](https://github.com/Anil-matcha/awesome-grok-bot) — curated bot templates for productivity, sales, marketing, operations, and personal workflows.
 - [awesome-gpt-6-astra](https://github.com/Anil-matcha/awesome-gpt-6-astra) — evidence-backed model workflows, prompts, evaluations, and safety notes.
 
 ## What it does
 
-- **Bot personas:** Create, edit, and switch between bots with their own role, system prompt, model, and visual identity.
-- **Model picker:** Select model IDs from the catalog exposed by the FastAPI service. The default model is `grok-4-5`.
-- **SSE chat:** Send a message, persist it locally, and receive `turn.started`, `content.delta`, and `turn.completed` events over Server-Sent Events.
-- **Image attachments:** Upload JPEG, PNG, WEBP, GIF, or AVIF images. The backend sends them to the configured provider when possible and falls back to a local data URL for previews.
+- **Bot personas:** Create and edit bots in a dialog with their own avatar, accent colour, role, description, model, and system prompt. Archive a bot to hide it while keeping its history, or delete it to remove the conversation and its computer too.
+- **Tool control:** A Tools menu in the chat header switches tool groups and connected apps on or off for that bot, the bot editor picks individual tools, and Plugins can withhold an app's tools from every bot without disconnecting it.
+- **Model picker:** Search the live model list reported by your server, or type any model ID. Models that advertise reasoning or vision support are tagged. The default model is `x-ai/grok-4.5` on OpenRouter.
+- **Server-side turns:** A reply runs as a server task, not inside the browser connection. Close the tab, reload, or open the same bot on another machine and the chat reattaches to the turn in progress and replays it. Approvals keep waiting until you answer, and the sidebar marks bots that are working or need you.
+- **Image attachments:** Upload JPEG, PNG, WEBP, GIF, or AVIF images. They are sent inline to vision-capable models as data URLs, so the image never leaves your machine except as part of the model request.
 - **Markdown messages:** Render assistant replies as Markdown in the chat transcript.
+- **Visible thinking:** Reasoning models' thinking (`reasoning_content` or `reasoning` in the stream) is shown live in a collapsible block above the reply. It is stored for display but never replayed to the model.
 - **Voice dictation:** Use the browser's Web Speech API when the browser supports it.
+- **Model tool calling:** The model receives OpenAI-style tool definitions for the shared workspace, its sandboxed computer (when the Docker runtime is on), and connected GitHub, and can call them itself. Every call goes through the same deny-by-default gateway and approval cards as the slash commands; screenshots are shown to vision models as images.
 - **Approved workspace tools:** Explicit `/workspace list`, `/workspace read`, and `/workspace write` requests pause for user approval, stay inside `WORKSPACE_ROOT`, and produce audit events.
 - **Governed action gateway:** Workspace actions use a structured request/result contract, a deny-by-default registry, approval state, and redacted lifecycle audit records.
-- **Settings drawer:** Configure the MUAPI key, provider base URL, default model, Composio key, and local profile details.
+- **Settings drawer:** Choose the provider, base URL, API key, default model, optional `reasoning_effort`, Composio key, and local profile details.
 - **Connector surface:** Browse a curated or live Composio app catalog, inspect connection status, and start OAuth authorization explicitly from Marketplace.
 - **Read-only GitHub action:** After connecting GitHub, run an explicit issue lookup from chat and pass its structured result through the action gateway.
 - **Approval-gated GitHub write:** Propose a GitHub issue from chat, inspect the repository/title/body-size preview, approve it, and receive a normalized issue result.
 - **Audit trail:** Review local approval, workspace-tool, and connector events from the sidebar.
-- **Computer provider surface:** Inspect a bot-scoped provider lifecycle, poll screen metadata, and run higher-risk provider actions through the same gateway used by tools.
+- **Sandbox desktop:** Each bot can have a sandboxed Ubuntu desktop (Plank dock with Chromium, a file manager and a terminal) that the model drives through its tools. You watch it live in the Computer tab over VNC, can take control with your own mouse and keyboard, and hand it back. The bot can ask you to take over for logins, CAPTCHAs, or checks.
 
 ## Quick start
 
@@ -40,7 +43,7 @@ This is an independent open-source project and is not affiliated with xAI.
 
 - Node.js and npm
 - Python and pip
-- A MUAPI API key for live model responses
+- Either an OpenRouter API key, or a local OpenAI-compatible server such as Ollama, LM Studio, or llama.cpp
 
 ### 1. Clone the repository
 
@@ -59,11 +62,29 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 
-export MUAPI_API_KEY="your_muapi_api_key"
+# OpenRouter (default base URL):
+export LLM_API_KEY="your_openrouter_api_key"
+
+# ...or a local server, no key needed. For example Ollama:
+# export LLM_BASE_URL="http://localhost:11434/v1"
+# export DEFAULT_MODEL="llama3.2"
+
 python run.py
 ```
 
 The API starts at `http://127.0.0.1:8000`.
+
+Everything above can also be set later from **App Settings → Model server** in the UI, which is the easier route when switching between a hosted provider and a local model. The provider presets there fill in the usual base URLs:
+
+| Server | Base URL |
+| --- | --- |
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| Ollama | `http://localhost:11434/v1` |
+| LM Studio | `http://localhost:1234/v1` |
+| llama.cpp server | `http://localhost:8080/v1` |
+| OpenAI | `https://api.openai.com/v1` |
+
+Any server that implements `POST /chat/completions` with `stream: true` works. If it also implements `GET /models`, the picker lists its models; otherwise type the model ID into the picker's search box.
 
 API documentation is available at:
 
@@ -84,25 +105,74 @@ Open [http://localhost:3000](http://localhost:3000).
 
 You can also enter the provider key from **App Settings → Connections** after the UI loads. The environment variable is the server-side fallback.
 
-The local server creates a mode-0600 session token in `DATA_DIR` and the browser establishes an HttpOnly session automatically when connecting from loopback. For a deployment accessed beyond the local machine, set `APP_AUTH_TOKEN` on the server and expose the same value to the client as `NEXT_PUBLIC_API_TOKEN` through the deployment environment.
+The local server creates a mode-0600 session token in `DATA_DIR` and the browser establishes an HttpOnly session automatically when connecting from loopback. For a deployment accessed from other machines, set `APP_AUTH_TOKEN` on the server; the client then shows a sign-in screen that exchanges the token for an HttpOnly session cookie. The token is never embedded in the client bundle. See [Run the whole stack with Docker Compose](#run-the-whole-stack-with-docker-compose).
 
 ### Optional Docker computer runtime
 
-The default provider is the deterministic local adapter. To enable real browser, terminal, file, input, and screenshot operations, build the pinned runtime image and opt in to the Docker provider:
+The default provider is the deterministic local adapter. To enable the real sandbox desktop (browser, terminal, file manager, input, screenshots, and live VNC), build the pinned runtime image and opt in to the Docker provider:
 
 ```bash
-docker build -t open-grok-bot-computer:1.62.1 ./runtime
+docker build -t open-grok-bot-computer:2.0.0 ./runtime
 export COMPUTER_PROVIDER=docker
-export COMPUTER_DOCKER_IMAGE=open-grok-bot-computer:1.62.1
+export COMPUTER_DOCKER_IMAGE=open-grok-bot-computer:2.0.0
 ```
 
-The Docker daemon must be running before starting the API. Each bot gets a separate container, a separate workspace under `DATA_DIR/computers`, an ephemeral loopback-only port, and an internal runtime token. The container root is read-only, capabilities are dropped, and CPU, memory, process, and shared-memory limits are applied. The current runtime provides browser screenshots and approved operations; human takeover and a desktop/VNC surface remain follow-up work.
+The Docker daemon must be running before starting the API. Each bot gets a separate container, a separate workspace under `DATA_DIR/computers`, an ephemeral loopback-only port, and an internal runtime token. The container root is read-only, capabilities are dropped, and CPU, memory, process, and shared-memory limits are applied.
+
+Inside the container an Xvnc display runs a minimal desktop (xfwm4 with compositing): a centred, auto-hiding Plank dock with Chromium, Thunar and xfce4-terminal, no application menu and no session controls. Chromium is not running at boot: the dock button, the bot, and the sandbox shell all start it with the same launcher command, and the driver attaches to that one instance over the loopback DevTools port, so whoever opens a window, there is a single browser. Windows have maximize and close buttons only; there is no task list, so minimizing is disabled to keep windows from being stranded. Screenshots capture the whole desktop and input goes through xdotool, so the bot can use the terminal and file manager as well as the browser. Ubuntu 24.04 with Node, Python and pip, git, curl, jq and unzip is available; `/workspace` persists between starts and `/tmp` and the home directory are wiped.
+
+**Watching and taking control.** The Computer tab streams the desktop through noVNC. The WebSocket goes to the API, which checks your session and bridges to the sandbox driver using the per-computer token; the sandbox publishes no ports and its VNC server listens on loopback only. "Take control" lets your mouse and keyboard through; while you hold control the bot's click, type and navigate tools are refused (it can still take screenshots). "Hand back to bot" returns control. The bot has a `computer_request_takeover` tool: it posts a card in chat and the Computer tab with what it needs, and after you hand control back the chat input is pre-filled with a message telling it to continue.
 
 This is a local development runtime, not a hardened hostile-web sandbox. Follow the [official Playwright Docker guidance](https://playwright.dev/docs/docker) and do not send untrusted websites or credentials through it until network egress, image provenance, and stronger sandboxing are reviewed for your deployment.
 
+### Run the whole stack with Docker Compose
+
+The compose file runs the API, the client, and a Caddy reverse proxy so the whole app is reachable from other machines on one origin:
+
+```bash
+cp .env.example .env
+# edit .env: set APP_AUTH_TOKEN (openssl rand -hex 32) and SITE_ADDRESS
+docker compose up --build -d
+```
+
+Open the `SITE_ADDRESS` you configured and sign in with the token. Caddy routes `/api/*` to the FastAPI container and everything else to the Next.js container, with SSE buffering disabled so chat streams normally.
+
+Caddy serves the site only for requests whose hostname or IP matches `SITE_ADDRESS` (the port may differ). Opening the server by another name, for example `http://localhost` on the host itself when `SITE_ADDRESS` is the LAN IP, returns a short message saying which address to use rather than the app.
+
+**HTTPS on a LAN.** With an `https://` address Caddy issues a certificate from its own internal certificate authority for that hostname or IP, so browsers will warn until they trust the root certificate. An IP address works too: browsers send no SNI for bare IPs, and the compose file derives Caddy's `default_sni` from `SITE_ADDRESS` so the handshake still succeeds. Export the root certificate once and install it on each client machine:
+
+```bash
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./open-grok-bot-ca.crt
+```
+
+HTTPS is what makes voice dictation work from another machine, since browsers only grant microphone access on secure origins. If you would rather skip certificates, set `SITE_ADDRESS=http://<hostname-or-ip>` and `AUTH_COOKIE_SECURE=0`.
+
+**Local model servers.** Inside the API container, `localhost` is the container. A server on the Docker host is reachable as `http://host.docker.internal:<port>/v1`; a server on another machine by its LAN address. Enter it in App Settings or as `LLM_BASE_URL` in `.env`.
+
+**Workspace.** `WORKSPACE_DIR` (default `./workspace`) is mounted as the directory the approved workspace tools can read and write. Point it at a project directory on the Docker host to let bots work on real files there.
+
+**Data and backups.** The API keeps everything it persists under `/data`: the SQLite database (bots, history, settings with encrypted keys, approvals, audit) and, in volume workspace mode, one folder per sandbox computer. Caddy keeps its internal certificate authority and issued certificates under its own `/data`. By default both are Docker named volumes (`api_data`, `caddy_data`). To keep them in a directory your backups already cover, set `API_DATA_DIR` and `CADDY_DATA_DIR` in `.env` to host paths; the API runs as uid 10001, so make its directory writable by that user (`chown -R 10001:10001 <dir>`). To move an existing installation, stop the stack, copy the volume contents (`docker run --rm -v open-grok-bot_api_data:/from -v <dir>:/to alpine cp -a /from/. /to/`), set the variables, and start it again. `caddy_config` only holds Caddy's last applied config and can stay a volume.
+
+**Computer runtime (optional).** The compose stack can also run the Docker/Playwright computer runtime. It is off by default because it requires the API to control the host's Docker daemon. To enable it, set these two lines in `.env` and bring the stack up again:
+
+```bash
+COMPUTER_PROVIDER=docker
+COMPOSE_PROFILES=computer
+```
+
+This builds the runtime image and starts a `docker-socket-proxy` sidecar on an internal-only network. The API never sees the Docker socket; it talks to the proxy, which only permits the container operations the provider uses (create, start, pause, kill, inspect images). Runtime containers join a dedicated `open-grok-bot-computers` network and are reached by name, so no ports are published for them. Each computer gets a named Docker volume as its workspace. To keep sandbox workspaces on the host instead, set `COMPUTER_DOCKER_WORKSPACE_MODE=bind` and `COMPUTER_DOCKER_HOST_WORKSPACE_ROOT` to the host path of the API's `/data/computers` directory (with `API_DATA_DIR=/srv/open-grok-bot/data` that is `/srv/open-grok-bot/data/computers`). The API creates one folder per computer there and makes it world-writable, because the sandbox runs as a different unprivileged user than the API.
+
+Runtime containers are started by the API, not by compose, so `docker compose down` does not remove any that are still running. Stop computers from the UI first, or remove them by label:
+
+```bash
+docker rm -f $(docker ps -q --filter label=open-grok-bot.runtime=computer)
+```
+
+The security caveats from the [Optional Docker computer runtime](#optional-docker-computer-runtime) section apply unchanged.
+
 ## Configuration
 
-The client defaults to `http://127.0.0.1:8000/api/v1`. Set `NEXT_PUBLIC_API_URL` if the API runs elsewhere:
+The client defaults to `http://127.0.0.1:8000/api/v1`. Set `NEXT_PUBLIC_API_URL` if the API runs elsewhere. In the compose build it is set to the relative path `/api/v1` because Caddy serves both on one origin.
 
 ```bash
 NEXT_PUBLIC_API_URL="http://127.0.0.1:8000/api/v1"
@@ -112,31 +182,45 @@ The server reads these variables from the environment:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MUAPI_API_KEY` | empty | Provider credential used when no key is saved in local settings |
-| `MUAPI_BASE_URL` | `https://api.muapi.ai/api/v1` | Provider API base URL |
+| `LLM_PROVIDER` | `openai_compatible` | `openai_compatible` or the legacy `muapi` |
+| `LLM_API_KEY` | empty | Provider credential used when no key is saved in local settings. Optional for local servers |
+| `LLM_BASE_URL` | per provider | API base URL. Defaults to `https://openrouter.ai/api/v1` for `openai_compatible` and `https://api.muapi.ai/api/v1` for `muapi` |
+| `LLM_REASONING_EFFORT` | empty | When set it is sent verbatim as `reasoning_effort`. Common values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; which ones work depends on the server and model. Leave empty to let the server use its default |
+| `LLM_TOOLS_ENABLED` | `1` | Offer the governed tools to the model through function calling. Set `0` to keep only the explicit slash commands |
+| `LLM_MAX_TOOL_ROUNDS` | `12` | Maximum model round-trips in one turn while it keeps calling tools. When the budget is spent the model gets one final call without tools so it still answers |
+| `LLM_SCREENSHOTS_TO_MODEL` | `auto` | Send sandbox screenshots to the model as images: `auto` (unless the model catalog says it has no vision), `always`, or `never` |
+| `MUAPI_API_KEY`, `MUAPI_BASE_URL` | empty | Legacy names. When `LLM_PROVIDER` is unset and `MUAPI_API_KEY` is present, the provider defaults to `muapi` and these values are used |
 | `COMPOSIO_API_KEY` | empty | Optional connector credential used when no key is saved in local settings |
-| `DEFAULT_MODEL` | `grok-4-5` | Initial model used for new settings and bots |
+| `COMPOSIO_IMPORTANT_TOOLS_ONLY` | `1` | Offer the model only the tools Composio marks important for each connected app |
+| `COMPOSIO_TOOLS_PER_TOOLKIT` | `40` | Maximum tools offered to the model per connected app |
+| `DEFAULT_MODEL` | `x-ai/grok-4.5` (`grok-4-5` for MUAPI) | Initial model used for new settings and bots |
 | `DATA_DIR` | per-user hidden app directory | SQLite database, migration copies, and local key location |
 | `APP_ENCRYPTION_KEY` | generated mode-0600 key in `DATA_DIR` | Optional Fernet key for encrypted provider credentials |
-| `APP_AUTH_TOKEN` | generated mode-0600 token in `DATA_DIR` | Bearer token for non-loopback API access |
+| `APP_AUTH_TOKEN` | generated mode-0600 token in `DATA_DIR` | Access token for the sign-in screen and bearer auth; disables automatic loopback sessions when set |
 | `AUTH_SESSION_MAX_AGE` | `86400` | Session-cookie lifetime in seconds |
 | `AUTH_COOKIE_SECURE` | `0` | Set to `1` when serving over HTTPS |
 | `CORS_ORIGINS` | localhost and loopback client origins | Comma-separated browser origins allowed by the API |
 | `COMPUTER_PROVIDER` | `fake` | Computer adapter: `fake` or `docker` |
-| `COMPUTER_DOCKER_IMAGE` | `open-grok-bot-computer:1.62.1` | Pinned local runtime image |
+| `COMPUTER_DOCKER_IMAGE` | `open-grok-bot-computer:2.0.0` | Pinned local runtime image |
 | `COMPUTER_DOCKER_WORKSPACE_ROOT` | `DATA_DIR/computers` | Root for per-bot runtime workspaces |
 | `COMPUTER_DOCKER_CPU_LIMIT` | `2.0` | Docker CPU limit per computer |
 | `COMPUTER_DOCKER_MEMORY_LIMIT` | `2g` | Docker memory limit per computer |
 | `COMPUTER_DOCKER_PIDS_LIMIT` | `512` | Maximum processes per computer |
 | `COMPUTER_DOCKER_START_TIMEOUT` | `20` | Runtime readiness timeout in seconds |
 | `COMPUTER_DOCKER_COMMAND_TIMEOUT` | `30` | Docker/driver operation timeout in seconds |
+| `COMPUTER_DOCKER_NETWORK` | empty | When set, runtime containers join this Docker network and are reached by name instead of a port published on loopback. Used by the compose stack |
+| `COMPUTER_DOCKER_WORKSPACE_MODE` | `bind` | `bind` mounts a host directory per computer; `volume` uses a named Docker volume per computer |
+| `COMPUTER_DOCKER_HOST_WORKSPACE_ROOT` | empty | In `bind` mode from inside a container: the host path equivalent of `COMPUTER_DOCKER_WORKSPACE_ROOT` |
+| `COMPUTER_DOCKER_WALLPAPER` | empty | Absolute host path of a JPEG or PNG used as the sandbox desktop wallpaper (compose: `COMPUTER_WALLPAPER`). Default is a generated gradient |
 | `WORKSPACE_ROOT` | repository root | Maximum directory that approved workspace tools can access |
 | `WORKSPACE_MAX_FILE_BYTES` | `131072` | Read/write size limit for workspace files |
-| `APPROVAL_TIMEOUT_SECONDS` | `120` | How long a pending approval remains open |
+| `APPROVAL_TIMEOUT_SECONDS` | `900` | How long a pending approval remains open. Turns run server-side, so this can be generous |
 | `HOST` | `127.0.0.1` | FastAPI bind address |
 | `PORT` | `8000` | FastAPI port |
 
-The selected model ID is appended to `MUAPI_BASE_URL`. The configured provider must expose the expected endpoint and response shape for that model.
+For `openai_compatible`, chat requests go to `{LLM_BASE_URL}/chat/completions` and the model list comes from `{LLM_BASE_URL}/models`. For `muapi`, the selected model ID is appended to the base URL and long requests are polled at `/predictions/{id}/result`.
+
+A key saved before the provider setting existed is migrated automatically: the database keeps using MUAPI with that key until you change the provider in App Settings.
 
 ## App surfaces
 
@@ -146,7 +230,7 @@ The selected model ID is appended to `MUAPI_BASE_URL`. The configured provider m
 | Computer | Bot-scoped provider lifecycle, screen metadata polling, and governed computer actions |
 | Marketplace | Searchable curated or live app catalog with explicit connect/disconnect actions |
 | Audit trail | Recent approval, workspace-tool, and connector events persisted by the local API |
-| App Settings | Local profile values and MUAPI connection/model settings |
+| App Settings | Local profile values, model server connection, default model, and reasoning effort |
 
 ## Architecture
 
@@ -155,8 +239,9 @@ Next.js client  ── HTTP + SSE ──▶  FastAPI server
                                      │
                  ┌───────────────────┼───────────────────┐
                  ▼                   ▼                   ▼
-           SQLite + key store     MUAPI API       Optional Composio
-           state/settings/audit   model + upload  connector endpoints
+           SQLite + key store   LLM provider        Optional Composio
+           state/settings/audit  OpenAI-compatible   connector endpoints
+                                 or legacy MUAPI
                                      │
                                      ▼
                          Computer provider
@@ -173,14 +258,17 @@ The main code areas are:
 | `client/lib/api.js` | HTTP and EventSource client functions |
 | `server/app/main.py` | FastAPI app, CORS, router registration, and health route |
 | `server/app/routers/` | Bots, chat, models, uploads, settings, approvals, connectors, and computers |
-| `server/app/services/muapi_service.py` | Provider requests, prediction polling, output parsing, and response events |
+| `server/app/services/llm_service.py` | Provider dispatch for chat streaming and the model catalog |
+| `server/app/services/llm_config.py` | Resolves provider, base URL, key, reasoning effort, and default model from env and saved settings |
+| `server/app/services/openai_compatible_service.py` | Streaming `/chat/completions` client and `/models` normalisation for OpenAI-compatible servers |
+| `server/app/services/muapi_service.py` | Legacy MUAPI requests, prediction polling, and the static MUAPI model registry |
 | `server/app/services/storage_service.py` | SQLite persistence, legacy import, secrets, and default data |
 | `server/app/services/database.py` | SQLite connection management and schema migrations |
 | `server/app/services/secret_store.py` | Fernet encryption for provider credentials |
 | `server/app/services/workspace_service.py` | Confined list/read/write workspace tools |
 | `server/app/services/approval_broker.py` | Pending approval coordination and audit events |
 | `server/app/services/action_gateway.py` | Registered action policy, approval handoff, execution, and lifecycle audit |
-| `server/app/services/composio_service.py` | Server-side Composio MCP calls and normalized GitHub issue results |
+| `server/app/services/composio_service.py` | Composio v3 REST calls (auth configs, connected accounts, tool execution) and normalized GitHub issue results |
 | `server/app/services/connector_actions.py` | Explicit connector command parsing and gateway registration |
 | `server/app/services/computer_provider.py` | Provider contract and deterministic local computer adapter |
 | `server/app/services/docker_computer_provider.py` | Per-bot Docker lifecycle, token boundary, and runtime operations |
@@ -194,16 +282,32 @@ The main code areas are:
 
 1. The client posts the user message to `/api/v1/chat/send`.
 2. The server stores it in the local message store.
-3. The client opens an EventSource connection to `/api/v1/chat/stream/{thread_id}`.
+3. The client starts a turn with `POST /api/v1/chat/turns/{thread_id}`. The server runs it as its own task, independent of any browser connection, and the client follows it over Server-Sent Events from `/api/v1/chat/stream/{thread_id}`. Events are numbered and buffered, so a reload, a second tab, or another machine attaches to the running turn and replays what it missed; `GET /api/v1/chat/turns` lists turns that are running or waiting on an approval, which drives the sidebar indicators.
 4. An explicit workspace or connector request becomes a structured action request and is checked against the deny-by-default gateway registry.
 5. The gateway pauses the stream for approval when required, then executes the registered action.
 6. The gateway emits normalized action lifecycle records; the client receives compatible tool events and the structured result.
-7. The server sends the selected model, recent history, and tool result to MUAPI.
-8. Provider output is forwarded as SSE deltas and the completed assistant message is persisted.
+7. The server sends the system prompt (including a description of the available tools), full conversation history, any slash-command result, and the tool definitions to the configured provider as an OpenAI-style `messages` array (MUAPI receives a flattened prompt and no tools).
+8. If the model calls tools, each call is validated, turned into a gateway action, approved where required, executed, and its result is appended as a `tool` message; the model is then called again, up to `LLM_MAX_TOOL_ROUNDS` times.
+9. Provider output is forwarded as SSE deltas and the completed assistant message is persisted together with its thinking and the tools it used.
 
 ### Product direction
 
 The prototype follows a local-first path: persistent bot personas and histories, explicit capabilities, user-visible approvals, provider flexibility, optional app connectors, and an opt-in isolated browser runtime. The next meaningful layers are durable memory and routines, voice input/output, human takeover, desktop/VNC presentation, background jobs, and authenticated multi-user deployment. They are intentionally documented as roadmap items rather than implied by the current UI.
+
+### Tools the model can call
+
+With an OpenAI-compatible provider the model is offered these functions. The gateway registry decides which need approval; the model is told which ones do and is instructed to stop and ask when a call is denied.
+
+| Tool | Gateway action | Approval |
+| --- | --- | --- |
+| `workspace_list`, `workspace_read`, `workspace_write` | `workspace.*` | yes |
+| `share_file` | `files.share` | no (puts a download card for a workspace or computer file in the chat) |
+| `computer_start`, `computer_screenshot`, `computer_files_list`, `computer_request_takeover` | `computer.*` | no |
+| `computer_browser_navigate`, `computer_terminal_execute`, `computer_send_input` | `computer.*` | yes |
+| `<app>_<action>` for every app connected through Composio, e.g. `gmail_fetch_emails`, `github_create_a_pull_request` | `connector.composio_read` or `connector.composio_action` | no for tools Composio marks read-only, yes for everything else |
+| `github_list_issues`, `github_create_issue` | `connector.github_*` | no / yes (fallback when the Composio catalog cannot be fetched) |
+
+Computer tools appear only when `COMPUTER_PROVIDER=docker`. Connector tools appear for each toolkit with an active Composio connection. If the toolkit's auth config in the Composio dashboard restricts the tools available for execution, exactly those tools are offered; otherwise only the tools Composio flags as important are, at most `COMPOSIO_TOOLS_PER_TOOLKIT` per app (see `COMPOSIO_IMPORTANT_TOOLS_ONLY`). Results are trimmed to 20 KB before they are returned to the model, and a screenshot is attached as an image message when the model accepts images.
 
 ### Approved workspace commands
 
@@ -242,7 +346,7 @@ All routes are prefixed with `/api/v1`.
 | POST | `/auth/login` | Exchange a configured bearer token for an HttpOnly session |
 | POST | `/auth/logout` | Clear the current browser session |
 | GET, POST | `/bots` | List or create bot personas |
-| PUT, DELETE | `/bots/{bot_id}` | Update or delete a bot |
+| PUT, DELETE | `/bots/{bot_id}` | Update a bot (including `archived`), or delete it with its messages, running turn, and computer |
 | GET | `/models` | Return the configured model catalog |
 | GET | `/chat/history/{thread_id}` | Read a bot's message history |
 | POST | `/chat/send` | Store a user message |
@@ -251,6 +355,8 @@ All routes are prefixed with `/api/v1`.
 | GET, POST | `/settings` | Read public settings or save write-only credentials and app settings |
 | POST | `/approvals/respond` | Submit an Allow/Deny approval response |
 | GET | `/audit?limit=100` | Read recent approval, tool, and connector events |
+| GET | `/tools/catalog` | Built-in tool groups and every connected app's tools, with the globally withheld apps |
+| GET | `/files/download?source=&path=&bot_id=` | Download (or `inline=1` preview) a file a bot shared; confined to the workspace or the bot's computer workspace |
 | GET | `/connectors/catalog` | Return curated or Composio-backed connector cards |
 | GET | `/connectors?services=...` | Check connector connection status |
 | POST | `/connectors/{slug}/authorize` | Request an OAuth URL |
@@ -279,7 +385,7 @@ On first start, the server creates a SQLite database under the per-user data dir
 For local development:
 
 - API routes require authentication. Loopback browser clients receive a session automatically; direct API clients can read `.auth-token` from `DATA_DIR` and send `Authorization: Bearer <token>`.
-- For non-loopback access, set `APP_AUTH_TOKEN` explicitly and configure `NEXT_PUBLIC_API_TOKEN` or call `/auth/login` before using protected routes. Do not expose the generated token through logs or source control.
+- For non-loopback access, set `APP_AUTH_TOKEN` explicitly and sign in through the UI (or call `/auth/login`) to obtain the session cookie. Do not expose the token through logs or source control.
 - Provider credentials are encrypted at rest with a mode-0600 Fernet key in `DATA_DIR`. Set `APP_ENCRYPTION_KEY` when the key must be supplied by deployment secrets or shared across restarts and hosts.
 - Settings responses never return provider credentials. Enter a new value to replace a stored key, or leave it blank to keep the current one.
 - Back up the SQLite database and encryption key together. If the key is lost, encrypted credentials must be entered again.
@@ -333,7 +439,7 @@ curl http://127.0.0.1:8000/api/v1/health
 
 If the server runs on another host or port, set `NEXT_PUBLIC_API_URL` before starting the client.
 
-If protected API calls return `401`, confirm the browser origin is listed in `CORS_ORIGINS`. For non-loopback deployments, set `NEXT_PUBLIC_API_TOKEN` when building the client or call `/api/v1/auth/login` first.
+If protected API calls return `401`, confirm the browser origin is listed in `CORS_ORIGINS`. For non-loopback deployments the UI shows the sign-in screen; enter the `APP_AUTH_TOKEN` value. Behind the compose proxy both the page and the API share one origin, so CORS does not apply.
 
 ### The Docker computer stays unavailable
 
@@ -341,7 +447,7 @@ Confirm that the daemon is running, the runtime image was built, and the API use
 
 ```bash
 docker info
-docker image inspect open-grok-bot-computer:1.62.1
+docker image inspect open-grok-bot-computer:2.0.0
 echo "$COMPUTER_PROVIDER"
 ```
 
@@ -349,11 +455,21 @@ The API intentionally reports a failed Docker start instead of silently executin
 
 ### The chat returns a provider error
 
-Check the key in App Settings, verify `MUAPI_BASE_URL`, and make sure the selected model ID is supported by that provider endpoint.
+The error text from the server is shown in the chat as the reply. Common causes:
 
-### Image uploads do not produce a hosted URL
+- **HTTP 401 / 403:** the key is missing or wrong. Open App Settings → Model server and save a key.
+- **HTTP 404 on `/chat/completions`:** the base URL is wrong. For Ollama, LM Studio and llama.cpp it must end in `/v1`.
+- **Unknown or unloaded model:** the model ID is not one the server offers. Use the picker's refresh button to reload the list, or load the model in your local server first.
+- **Unrecognized argument `reasoning_effort`:** the server or model does not accept it. Set Reasoning effort back to "Not sent" in App Settings.
+- **Could not reach ...:** the server is not running or is not listening on that host and port.
 
-The backend falls back to a base64 data URL for local previews when no usable provider key is configured or the provider upload request fails.
+### The model picker is empty or shows only the default model
+
+The server did not answer `GET /models`. The picker still accepts a typed model ID, so search for the ID you want and choose "Use ... as the model ID".
+
+### Images are ignored by the model
+
+Images are sent as OpenAI-style `image_url` parts. The selected model must support image input; on OpenRouter such models are tagged "Vision" in the picker. For local servers choose a vision model such as a LLaVA or Qwen-VL variant.
 
 ## Contributing
 

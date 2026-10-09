@@ -1,0 +1,34 @@
+{
+	# Issue certificates from Caddy's own certificate authority for whatever
+	# hostname or IP SITE_ADDRESS names, so HTTPS works on a LAN without public
+	# DNS. Trust the root certificate on client machines (see the README) or set
+	# SITE_ADDRESS to an http:// address to skip TLS entirely.
+	local_certs
+	admin off
+	# Browsers do not send SNI when they connect to a bare IP address. Without
+	# a default, Caddy cannot pick a certificate and the TLS handshake fails
+	# with "internal error". SITE_HOST is derived from SITE_ADDRESS by the
+	# compose service command.
+	default_sni {$SITE_HOST:localhost}
+}
+
+{$SITE_ADDRESS:https://localhost} {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy api:8000 {
+			# Chat responses are Server-Sent Events and must not be buffered.
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# Caddy only serves the site above for requests whose Host matches
+# SITE_ADDRESS; anything else would get a blank 200. Explain instead.
+http:// {
+	respond "Open Grok Bot is served at {$SITE_ADDRESS:https://localhost}. Open that address exactly: the hostname or IP in the URL must match SITE_ADDRESS." 404
+}

@@ -1,61 +1,80 @@
-"""Small Composio adapter used by governed connector actions."""
+"""Composio adapter used by governed connector actions.
 
-import json
+Talks to Composio's v3 REST API with the project API key. Composio's hosted
+MCP endpoint (connect.composio.dev) no longer accepts API keys, only OAuth
+bearer tokens, so connection management and tool execution go through the
+REST endpoints instead: auth configs, connected accounts, and
+`/tools/execute/{tool_slug}`.
+"""
+
+import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
+import time
 
 from app.config import settings
 from app.services.storage_service import StorageService, storage_service
 
 
-CONNECT_URL = "https://connect.composio.dev/mcp"
+BACKEND_URL = "https://backend.composio.dev/api/v3"
+# Composio scopes connected accounts to a user id. This app has one owner, so
+# one fixed id keeps link creation, status checks, and tool execution aligned.
+DEFAULT_USER_ID = os.getenv("COMPOSIO_USER_ID", "").strip() or "open-grok-bot-local-user"
+
 GITHUB_LIST_ISSUES_TOOL = "GITHUB_LIST_REPOSITORY_ISSUES"
 GITHUB_CREATE_ISSUE_TOOL = "GITHUB_CREATE_AN_ISSUE"
 _SAFE_GITHUB_PART = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
+_SAFE_TOOLKIT_SLUG = re.compile(r"^[a-z0-9_-]{1,64}$")
+_SAFE_TOOL_SLUG = re.compile(r"^[A-Z0-9_]{1,128}$")
+_SAFE_VERSION = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+TOOLS_CACHE_SECONDS = 600.0
+CONNECTED_CACHE_SECONDS = 60.0
+
+ClientFactory = Callable[[httpx.Timeout], httpx.AsyncClient]
 
 
 class ConnectorServiceError(ValueError):
     """Raised when a connector action cannot be validated or completed."""
 
 
-def parse_mcp_response(text: str) -> Dict[str, Any]:
-    line = text if text.lstrip().startswith("{") else next(
-        (item[6:] for item in text.splitlines() if item.startswith("data: ")), None
-    )
-    if not line:
-        raise ConnectorServiceError("The connector returned an empty response.")
+def _default_client_factory(timeout: httpx.Timeout) -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=timeout)
 
-    try:
-        message = json.loads(line)
-    except json.JSONDecodeError as exc:
-        raise ConnectorServiceError("The connector returned invalid JSON.") from exc
-    if message.get("error"):
-        error = message["error"]
-        raise ConnectorServiceError(error.get("message", "The connector returned an error."))
 
-    content = next(
-        (
-            item.get("text")
-            for item in (message.get("result", {}).get("content") or [])
-            if item.get("type") == "text"
-        ),
-        None,
-    )
-    if not content:
-        result = message.get("result") or {}
-        return result if isinstance(result, dict) else {"data": result}
-    try:
-        decoded = json.loads(content)
-    except json.JSONDecodeError:
-        return {"text": content}
-    return decoded if isinstance(decoded, dict) else {"data": decoded}
+def extract_error_message(payload: Any, default: str) -> str:
+    """Composio errors arrive as {"error": {"message": ...}} or {"error": "..."}."""
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("slug")
+            if message:
+                suggestion = error.get("suggested_fix")
+                return f"{message} {suggestion}".strip() if suggestion else str(message)
+        elif isinstance(error, str) and error:
+            return error
+        if isinstance(payload.get("message"), str) and payload["message"]:
+            return payload["message"]
+    return default
 
 
 class ComposioService:
-    def __init__(self, storage: StorageService = storage_service):
+    def __init__(
+        self,
+        storage: StorageService = storage_service,
+        client_factory: Optional[ClientFactory] = None,
+        user_id: Optional[str] = None,
+        base_url: str = BACKEND_URL,
+    ):
         self.storage = storage
+        self._client_factory = client_factory or _default_client_factory
+        self.user_id = user_id or DEFAULT_USER_ID
+        self.base_url = base_url.rstrip("/")
+        # Tool catalogs change rarely; connections change when the user acts.
+        self._tools_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+        self._connected_cache: Optional[Tuple[float, List[str]]] = None
+        self._allowed_cache: Dict[str, Tuple[float, Optional[List[str]]]] = {}
 
     def get_api_key(self) -> str:
         config = self.storage.get_settings()
@@ -64,37 +83,371 @@ class ComposioService:
             or config.get("composio_key")
             or settings.COMPOSIO_API_KEY
             or ""
+        ).strip()
+
+    # ---- low-level -------------------------------------------------------------
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        api_key: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        key = (api_key or self.get_api_key()).strip()
+        if not key:
+            raise ConnectorServiceError(
+                "Configure a Composio API key in App Settings before using connectors."
+            )
+
+        try:
+            async with self._client_factory(httpx.Timeout(30.0, connect=10.0)) as client:
+                response = await client.request(
+                    method,
+                    f"{self.base_url}{path}",
+                    headers={"x-api-key": key, "accept": "application/json"},
+                    params=params,
+                    json=json,
+                )
+        except httpx.HTTPError as exc:
+            raise ConnectorServiceError(f"Composio is unreachable: {exc}") from exc
+
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+
+        if response.status_code == 401:
+            raise ConnectorServiceError(
+                "Composio rejected the API key (HTTP 401). Check the key in App Settings."
+            )
+        if response.status_code == 403:
+            # A valid key without permission for this operation, typically a
+            # scoped project key. Pass Composio's explanation through.
+            detail = extract_error_message(data, "the key is not allowed to perform this operation")
+            raise ConnectorServiceError(
+                f"Composio refused the request (HTTP 403): {detail} "
+                "Check the API key's permissions in the Composio dashboard."
+            )
+        if response.status_code >= 400:
+            raise ConnectorServiceError(
+                extract_error_message(data, f"Composio returned HTTP {response.status_code}.")
+            )
+        return data
+
+    @staticmethod
+    def _validate_toolkit_slug(slug: str) -> str:
+        candidate = (slug or "").strip().lower()
+        if not _SAFE_TOOLKIT_SLUG.fullmatch(candidate):
+            raise ConnectorServiceError("Connector name is invalid.")
+        return candidate
+
+    # ---- connected accounts ---------------------------------------------------
+
+    async def list_connected_accounts(
+        self, toolkit_slugs: List[str], api_key: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        slugs = [self._validate_toolkit_slug(slug) for slug in toolkit_slugs]
+        if not slugs:
+            return []
+        data = await self._request(
+            "GET",
+            "/connected_accounts",
+            api_key=api_key,
+            params={"toolkit_slugs": ",".join(slugs), "user_ids": self.user_id, "limit": 100},
         )
+        items = data.get("items") if isinstance(data, dict) else None
+        return [item for item in (items or []) if isinstance(item, dict)]
+
+    async def list_connected_toolkits(self, api_key: Optional[str] = None) -> List[str]:
+        """Slugs of every toolkit with an ACTIVE connection for this user."""
+        now = time.monotonic()
+        if self._connected_cache and self._connected_cache[0] > now:
+            return list(self._connected_cache[1])
+        data = await self._request(
+            "GET",
+            "/connected_accounts",
+            api_key=api_key,
+            params={"user_ids": self.user_id, "statuses": "ACTIVE", "limit": 100},
+        )
+        items = data.get("items") if isinstance(data, dict) else None
+        slugs: List[str] = []
+        for account in items or []:
+            if not isinstance(account, dict) or account.get("is_disabled"):
+                continue
+            if str(account.get("status") or "").upper() != "ACTIVE":
+                continue
+            slug = str((account.get("toolkit") or {}).get("slug") or "").lower()
+            if slug and _SAFE_TOOLKIT_SLUG.fullmatch(slug) and slug not in slugs:
+                slugs.append(slug)
+        self._connected_cache = (now + CONNECTED_CACHE_SECONDS, slugs)
+        return list(slugs)
+
+    def forget_connections(self) -> None:
+        """Drop the cached connection list after the user connects or disconnects."""
+        self._connected_cache = None
+        self._allowed_cache = {}
+
+    async def allowed_tools(self, toolkit_slug: str, api_key: Optional[str] = None) -> Optional[List[str]]:
+        """The allow list set on the toolkit's auth config in the Composio dashboard.
+
+        Returns None when no restriction applies. With several enabled auth
+        configs for one toolkit, the lists are combined; a config without a
+        list means the toolkit is unrestricted.
+        """
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        now = time.monotonic()
+        cached = self._allowed_cache.get(slug)
+        if cached and cached[0] > now:
+            return list(cached[1]) if cached[1] is not None else None
+        data = await self._request("GET", "/auth_configs", api_key=api_key, params={"toolkit_slug": slug, "limit": 50})
+        items = data.get("items") if isinstance(data, dict) else None
+        allowed: List[str] = []
+        restricted = False
+        unrestricted = False
+        for config in items or []:
+            if not isinstance(config, dict) or str(config.get("status") or "ENABLED").upper() != "ENABLED":
+                continue
+            access = config.get("tool_access_config") if isinstance(config.get("tool_access_config"), dict) else {}
+            tools = [str(t) for t in (access.get("tools_available_for_execution") or []) if _SAFE_TOOL_SLUG.fullmatch(str(t))]
+            if tools:
+                restricted = True
+                allowed.extend(t for t in tools if t not in allowed)
+            else:
+                unrestricted = True
+        result = allowed if restricted and not unrestricted else None
+        self._allowed_cache[slug] = (now + CONNECTED_CACHE_SECONDS, result)
+        return list(result) if result is not None else None
+
+    async def list_tools(
+        self,
+        toolkit_slug: str,
+        *,
+        important_only: bool = True,
+        limit: int = 40,
+        tool_slugs: Optional[List[str]] = None,
+        api_key: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Composio's tool descriptions (slug, description, input schema, tags) for one toolkit.
+
+        With `tool_slugs`, exactly those tools are requested (in batches), so
+        an allow list is honoured even for toolkits with hundreds of tools.
+        """
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        wanted = sorted({s for s in (tool_slugs or []) if _SAFE_TOOL_SLUG.fullmatch(s)})
+        cache_key = f"{slug}:{int(bool(important_only))}:{limit}:{','.join(wanted)}"
+        now = time.monotonic()
+        cached = self._tools_cache.get(cache_key)
+        if cached and cached[0] > now:
+            return list(cached[1])
+
+        tools: List[Dict[str, Any]] = []
+        if wanted:
+            for start in range(0, len(wanted), 50):
+                batch = wanted[start:start + 50]
+                data = await self._request(
+                    "GET", "/tools", api_key=api_key,
+                    params={"toolkit_slug": slug, "tool_slugs": ",".join(batch), "limit": len(batch),
+                            "include_deprecated": "false", "toolkit_versions": "latest"},
+                )
+                items = data.get("items") if isinstance(data, dict) else None
+                tools.extend(item for item in (items or []) if isinstance(item, dict) and item.get("slug"))
+        else:
+            # Composio includes deprecated tools unless told otherwise; they
+            # would only waste the per-app budget. MCP-backed toolkits have no
+            # pinned version and list nothing unless "latest" is requested.
+            params: Dict[str, Any] = {
+                "toolkit_slug": slug,
+                "limit": max(1, min(int(limit), 200)),
+                "include_deprecated": "false",
+                "toolkit_versions": "latest",
+            }
+            if important_only:
+                params["important"] = "true"
+            data = await self._request("GET", "/tools", api_key=api_key, params=params)
+            items = data.get("items") if isinstance(data, dict) else None
+            tools = [item for item in (items or []) if isinstance(item, dict) and item.get("slug")]
+        self._tools_cache[cache_key] = (now + TOOLS_CACHE_SECONDS, tools)
+        return list(tools)
+
+    async def execute_tool(
+        self, name: str, arguments: Dict[str, Any], api_key: Optional[str] = None, version: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Run a Composio tool and return its data, raising when Composio reports failure."""
+        response = (await self.call_tool(name, arguments, api_key=api_key, version=version))["data"]
+        if response.get("successful") is False or response.get("error"):
+            raise ConnectorServiceError(
+                extract_error_message(response.get("error"), f"Composio could not run {name}.")
+                if not isinstance(response.get("error"), str)
+                else str(response.get("error"))
+            )
+        return {"tool": name, "data": response.get("data")}
+
+    async def connection_status(
+        self, toolkit_slugs: List[str], api_key: Optional[str] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Map each toolkit slug to whether an ACTIVE connection exists."""
+        slugs = [self._validate_toolkit_slug(slug) for slug in toolkit_slugs]
+        status: Dict[str, Dict[str, Any]] = {slug: {"connected": False} for slug in slugs}
+        for account in await self.list_connected_accounts(slugs, api_key=api_key):
+            slug = str((account.get("toolkit") or {}).get("slug") or "").lower()
+            if slug not in status:
+                continue
+            active = str(account.get("status") or "").upper() == "ACTIVE" and not account.get("is_disabled")
+            if active:
+                status[slug] = {"connected": True, "account_id": account.get("id")}
+            elif not status[slug]["connected"]:
+                status[slug] = {"connected": False, "pending_status": account.get("status")}
+        return status
+
+    async def toolkit_auth_info(self, toolkit_slug: str, api_key: Optional[str] = None) -> Dict[str, Any]:
+        """Which auth schemes a toolkit offers and which Composio manages itself."""
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        data = await self._request("GET", f"/toolkits/{slug}", api_key=api_key)
+        if not isinstance(data, dict):
+            return {"slug": slug, "managed_schemes": [], "auth_schemes": []}
+        details = data.get("auth_config_details") or []
+        schemes = [
+            str(item.get("mode"))
+            for item in details
+            if isinstance(item, dict) and item.get("mode")
+        ] or [str(s) for s in (data.get("auth_schemes") or [])]
+        return {
+            "slug": slug,
+            "managed_schemes": [str(s) for s in (data.get("composio_managed_auth_schemes") or [])],
+            "auth_schemes": schemes,
+        }
+
+    async def list_auth_config_slugs(self, api_key: Optional[str] = None) -> set:
+        """Toolkit slugs that already have an enabled auth config in the project."""
+        slugs: set = set()
+        cursor: Optional[str] = None
+        for _ in range(5):
+            params: Dict[str, Any] = {"limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._request("GET", "/auth_configs", api_key=api_key, params=params)
+            if not isinstance(data, dict):
+                break
+            for item in data.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("status") or "ENABLED").upper() != "ENABLED":
+                    continue
+                slug = str((item.get("toolkit") or {}).get("slug") or "").lower()
+                if slug:
+                    slugs.add(slug)
+            cursor = data.get("next_cursor")
+            if not cursor:
+                break
+        return slugs
+
+    async def ensure_auth_config(self, toolkit_slug: str, api_key: Optional[str] = None) -> str:
+        """Return an enabled auth config id for the toolkit, creating a
+        Composio-managed one when the project has none yet."""
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        data = await self._request(
+            "GET", "/auth_configs", api_key=api_key, params={"toolkit_slug": slug, "limit": 20}
+        )
+        items = [
+            item
+            for item in ((data.get("items") if isinstance(data, dict) else None) or [])
+            if isinstance(item, dict)
+            and item.get("id")
+            and str(item.get("status") or "ENABLED").upper() == "ENABLED"
+            and str((item.get("toolkit") or {}).get("slug") or slug).lower() == slug
+        ]
+        if items:
+            managed = [item for item in items if item.get("is_composio_managed")]
+            return str((managed or items)[0]["id"])
+
+        info = await self.toolkit_auth_info(slug, api_key=api_key)
+        if not info["managed_schemes"]:
+            schemes = ", ".join(info["auth_schemes"]) or "its own credentials"
+            raise ConnectorServiceError(
+                f"Composio has no managed credentials for {slug}. Create an auth config for it in "
+                f"the Composio dashboard (Auth Configs) using your own credentials ({schemes}), "
+                "then connect again."
+            )
+
+        created = await self._request(
+            "POST",
+            "/auth_configs",
+            api_key=api_key,
+            json={"toolkit": {"slug": slug}, "auth_config": {"type": "use_composio_managed_auth"}},
+        )
+        auth_config = created.get("auth_config") if isinstance(created, dict) else None
+        if not isinstance(auth_config, dict) or not auth_config.get("id"):
+            raise ConnectorServiceError(f"Composio did not return an auth config for {slug}.")
+        return str(auth_config["id"])
+
+    async def create_auth_link(
+        self,
+        toolkit_slug: str,
+        callback_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Start an OAuth connection and return the URL the user must open."""
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        auth_config_id = await self.ensure_auth_config(slug, api_key=api_key)
+        body: Dict[str, Any] = {"auth_config_id": auth_config_id, "user_id": self.user_id}
+        if callback_url:
+            body["callback_url"] = callback_url
+        data = await self._request("POST", "/connected_accounts/link", api_key=api_key, json=body)
+        url = data.get("redirect_url") if isinstance(data, dict) else None
+        if not url:
+            raise ConnectorServiceError(f"Composio did not return an authorization link for {slug}.")
+        return {
+            "url": url,
+            "connected_account_id": data.get("connected_account_id"),
+            "expires_at": data.get("expires_at"),
+        }
+
+    async def disconnect(self, toolkit_slug: str, api_key: Optional[str] = None) -> int:
+        """Delete every connected account for the toolkit; returns how many."""
+        slug = self._validate_toolkit_slug(toolkit_slug)
+        removed = 0
+        for account in await self.list_connected_accounts([slug], api_key=api_key):
+            account_id = account.get("id")
+            if not account_id:
+                continue
+            await self._request("DELETE", f"/connected_accounts/{account_id}", api_key=api_key)
+            removed += 1
+        return removed
+
+    # ---- tool execution -------------------------------------------------------
 
     async def call_tool(
         self,
         name: str,
         arguments: Dict[str, Any],
         api_key: Optional[str] = None,
+        version: Optional[str] = None,
     ) -> Dict[str, Any]:
-        key = api_key or self.get_api_key()
-        if not key:
-            raise ConnectorServiceError(
-                "Configure a Composio API key and connect GitHub before using connector actions."
-            )
+        """Execute a Composio tool for this app's user.
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                CONNECT_URL,
-                headers={
-                    "content-type": "application/json",
-                    "accept": "application/json, text/event-stream",
-                    "x-consumer-api-key": key,
-                },
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": name, "arguments": arguments},
-                },
-            )
-            response.raise_for_status()
-            return parse_mcp_response(response.text)
+        Returns {"data": <execute response>} where the execute response has
+        `successful`, `data`, and `error`, which the normalisers below check.
+        `version` pins the toolkit version the tool schema came from.
+        """
+        if not _SAFE_TOOL_SLUG.fullmatch(name or ""):
+            raise ConnectorServiceError("Connector tool name is invalid.")
+        body: Dict[str, Any] = {"user_id": self.user_id, "arguments": arguments}
+        if version and _SAFE_VERSION.fullmatch(str(version)):
+            body["version"] = str(version)
+        result = await self._request(
+            "POST",
+            f"/tools/execute/{name}",
+            api_key=api_key,
+            json=body,
+        )
+        if not isinstance(result, dict):
+            raise ConnectorServiceError("Composio returned an invalid tool result.")
+        return {"data": result}
+
+    # ---- GitHub actions -------------------------------------------------------
 
     @staticmethod
     def _validate_github_part(value: str, label: str) -> str:
@@ -134,7 +487,7 @@ class ComposioService:
         if isinstance(payload, list):
             raw_issues = payload
         elif isinstance(payload, dict):
-            raw_issues = payload.get("issues") or payload.get("items") or []
+            raw_issues = payload.get("issues") or payload.get("items") or payload.get("details") or []
         else:
             raw_issues = []
 

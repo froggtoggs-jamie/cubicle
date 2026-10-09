@@ -1,30 +1,47 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import Sidebar from './Sidebar';
 import ChatWindow from './ChatWindow';
 import ComputerPanel from './ComputerPanel';
 import Marketplace from './Marketplace';
 import AuditPanel from './AuditPanel';
 import AppSettingsDrawer from './AppSettingsDrawer';
+import BotEditorModal, { ConfirmDialog } from './BotEditorModal';
 
-import { 
-  fetchBots, 
-  fetchModels, 
-  fetchChatHistory, 
+import {
+  fetchBots,
+  fetchModels,
+  fetchChatHistory,
   fetchSettings,
-  createBot, 
-  updateBot 
+  createBot,
+  updateBot,
+  deleteBot,
 } from '../lib/api';
+import { establishSession, setAuthFailureHandler, fetchTurnsOverview } from '../lib/api';
+import LoginScreen from './LoginScreen';
 
 export default function Dashboard() {
   const [bots, setBots] = useState([]);
   const [models, setModels] = useState([]);
+  const [catalogError, setCatalogError] = useState(null);
+  // 'checking' -> 'ready' | 'login'. Any later 401 flips back to 'login'.
+  const [authState, setAuthState] = useState('checking');
   const [activeBotId, setActiveBotId] = useState('');
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'computer' | 'marketplace' | 'audit'
-  const [messages, setMessages] = useState([]);
+  // Transcripts are cached per bot so a reply that is still streaming for
+  // one bot survives switching to another bot or another tab.
+  const [messagesByBot, setMessagesByBot] = useState({});
+  const [streamingBots, setStreamingBots] = useState({});
+  // The server's view of running turns and pending approvals, by bot.
+  const [turnStates, setTurnStates] = useState({});
+  // Text to drop into the chat input, e.g. after handing a computer back.
+  const [chatPrefill, setChatPrefill] = useState(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [defaultModel, setDefaultModel] = useState('grok-4-5');
+  // Bot editor: null, { mode: 'create' } or { mode: 'edit', bot }.
+  const [botEditor, setBotEditor] = useState(null);
+  const [botToDelete, setBotToDelete] = useState(null);
+  const [defaultModel, setDefaultModel] = useState('');
   const [userName, setUserName] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('open_grok_user_name') || 'You';
@@ -32,33 +49,98 @@ export default function Dashboard() {
     return 'You';
   });
 
+  // Session check. On loopback this succeeds silently; elsewhere the login
+  // screen collects the access token.
+  useEffect(() => {
+    setAuthFailureHandler(() => setAuthState('login'));
+    establishSession()
+      .then(() => setAuthState('ready'))
+      .catch(() => setAuthState('login'));
+    return () => setAuthFailureHandler(null);
+  }, []);
+
+  // Poll the server for turns that are running or waiting on an approval.
+  // This is what lets another machine (or a reloaded page) see and attach
+  // to work in progress, and what drives the sidebar indicators.
+  useEffect(() => {
+    if (authState !== 'ready') return undefined;
+    let disposed = false;
+    const poll = async () => {
+      const overview = await fetchTurnsOverview();
+      if (disposed) return;
+      const next = {};
+      for (const turn of overview.turns || []) next[turn.thread_id] = turn;
+      setTurnStates((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    };
+    poll();
+    const interval = window.setInterval(poll, 4000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [authState]);
+
   // Initial Data Fetch
   useEffect(() => {
+    if (authState !== 'ready') return;
     async function initData() {
       try {
-        const [botsData, modelsData, settingsData] = await Promise.all([fetchBots(), fetchModels(), fetchSettings()]);
+        const [botsData, catalog, settingsData] = await Promise.all([fetchBots(), fetchModels(), fetchSettings()]);
         setBots(botsData);
-        setModels(modelsData);
+        setModels(catalog.models);
+        setCatalogError(catalog.error);
         if (settingsData?.default_model) {
           setDefaultModel(settingsData.default_model);
         }
-        if (botsData.length > 0) {
-          setActiveBotId(botsData[0].id);
+        const firstVisible = botsData.find((b) => !b.archived) || botsData[0];
+        if (firstVisible) {
+          setActiveBotId(firstVisible.id);
         }
       } catch (err) {
         console.error('Initialization error:', err);
       }
     }
     initData();
+  }, [authState]);
+
+  // Reload the model list, bypassing the server cache (used after the
+  // connection settings change or from the picker's refresh button).
+  const refreshModels = async () => {
+    const catalog = await fetchModels(true);
+    setModels(catalog.models);
+    setCatalogError(catalog.error);
+    return catalog;
+  };
+
+  const setMessagesFor = useCallback((botId, updater) => {
+    setMessagesByBot((prev) => {
+      const current = prev[botId] || [];
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return { ...prev, [botId]: next };
+    });
   }, []);
 
-  // Fetch chat history whenever active bot changes
+  const handleStreamingChange = useCallback((botId, value) => {
+    setStreamingBots((prev) => (Boolean(prev[botId]) === Boolean(value) ? prev : { ...prev, [botId]: Boolean(value) }));
+  }, []);
+
+  const activeBotStreaming = Boolean(activeBotId && streamingBots[activeBotId]);
+
+  // Fetch chat history whenever the active bot changes, and again once a
+  // reply finishes so the cache picks up the persisted message ids. A bot
+  // that is mid-reply keeps its live transcript.
   useEffect(() => {
-    if (!activeBotId) return;
+    if (!activeBotId || activeBotStreaming) return;
+    let cancelled = false;
     fetchChatHistory(activeBotId)
-      .then((history) => setMessages(history))
+      .then((history) => {
+        if (!cancelled) setMessagesFor(activeBotId, history);
+      })
       .catch((err) => console.error('Failed to load history:', err));
-  }, [activeBotId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBotId, activeBotStreaming, setMessagesFor]);
 
   const activeBot = bots.find((b) => b.id === activeBotId) || bots[0];
 
@@ -75,28 +157,73 @@ export default function Dashboard() {
     }
   };
 
-  const handleCreateNewBot = async () => {
-    const name = prompt('Enter Bot Name:', 'New Assistant');
-    if (!name) return;
-    const role = prompt('Enter Role:', 'General Intelligence');
-    const model = prompt('Enter Model (e.g. grok-4-5, claude-3-5-sonnet):', 'grok-4-5');
-
-    try {
-      const newBot = await createBot({
-        name,
-        role: role || 'AI Assistant',
-        model: model || 'grok-4-5',
-        description: `Custom agent running model ${model || 'grok-4-5'} via MUAPI.`,
-        avatar: '🤖',
-        system_prompt: `You are ${name}, a helpful AI assistant.`
-      });
-      setBots((prev) => [...prev, newBot]);
-      setActiveBotId(newBot.id);
-      setActiveTab('chat');
-    } catch (err) {
-      console.error('Failed to create bot:', err);
-    }
+  // When the active bot disappears from the list, move to the next visible one.
+  const selectNextVisible = (list, removedId) => {
+    if (activeBotId !== removedId) return;
+    const next = list.find((b) => !b.archived && b.id !== removedId);
+    setActiveBotId(next ? next.id : '');
+    setActiveTab('chat');
   };
+
+  // Any partial update to a bot (tool settings from the chat header, etc.).
+  const handleUpdateBot = async (botId, updates) => {
+    const updated = await updateBot(botId, updates);
+    setBots((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+    return updated;
+  };
+
+  const handleSaveBot = async (values) => {
+    if (botEditor?.mode === 'edit' && botEditor.bot) {
+      const updated = await updateBot(botEditor.bot.id, values);
+      setBots((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+      if (updated.id === activeBotId && values.model) setDefaultModel(values.model);
+    } else {
+      const created = await createBot(values);
+      setBots((prev) => [...prev, created]);
+      setActiveBotId(created.id);
+      setActiveTab('chat');
+    }
+    setBotEditor(null);
+  };
+
+  const handleArchiveBot = async (bot, archived) => {
+    const updated = await updateBot(bot.id, { archived });
+    setBots((prev) => {
+      const list = prev.map((b) => (b.id === updated.id ? updated : b));
+      if (archived) selectNextVisible(list, bot.id);
+      return list;
+    });
+    if (!archived) setActiveBotId(bot.id);
+    setBotEditor(null);
+  };
+
+  const handleDeleteBot = async (bot) => {
+    await deleteBot(bot.id);
+    setBots((prev) => {
+      const list = prev.filter((b) => b.id !== bot.id);
+      selectNextVisible(list, bot.id);
+      return list;
+    });
+    setMessagesByBot((prev) => {
+      const next = { ...prev };
+      delete next[bot.id];
+      return next;
+    });
+    setBotToDelete(null);
+    setBotEditor(null);
+  };
+
+  if (authState === 'login') {
+    return <LoginScreen onAuthenticated={() => setAuthState('ready')} />;
+  }
+
+  if (authState === 'checking') {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-[#09090b] text-zinc-500 text-xs font-sans select-none">
+        Connecting to the API…
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#09090b] text-zinc-100 font-sans">
@@ -111,26 +238,51 @@ export default function Dashboard() {
         }}
         activeTab={activeTab}
         onSelectTab={setActiveTab}
+        turnStates={turnStates}
         onOpenSettings={() => setIsSettingsOpen(!isSettingsOpen)}
-        onOpenNewBot={handleCreateNewBot}
+        onOpenNewBot={() => setBotEditor({ mode: 'create' })}
+        onEditBot={(bot) => setBotEditor({ mode: 'edit', bot })}
+        onArchiveBot={(bot, archived) => handleArchiveBot(bot, archived).catch((err) => console.error('Archive failed:', err))}
+        onDeleteBot={(bot) => setBotToDelete(bot)}
       />
 
       {/* Main Workspace Display Area */}
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
-        {activeTab === 'chat' && (
+        {/* The chat stays mounted on every tab so the draft, the open SSE
+            stream, approvals, and tool events survive a visit to the
+            Computer tab. `contents` keeps it out of the layout when shown. */}
+        <div className={activeTab === 'chat' ? 'contents' : 'hidden'}>
           <ChatWindow
             bot={activeBot}
             models={models}
-            messages={messages}
-            setMessages={setMessages}
+            catalogError={catalogError}
+            onRefreshModels={refreshModels}
+            messages={activeBotId ? messagesByBot[activeBotId] || [] : []}
+            setMessagesFor={setMessagesFor}
+            streamingBots={streamingBots}
+            onStreamingChange={handleStreamingChange}
+            turnStates={turnStates}
             onUpdateBotModel={handleUpdateBotModel}
+            onEditBot={() => activeBot && setBotEditor({ mode: 'edit', bot: activeBot })}
+            onUpdateBot={handleUpdateBot}
             onToggleComputer={() => setActiveTab('computer')}
             defaultModel={defaultModel}
+            prefill={chatPrefill}
           />
-        )}
+        </div>
 
         {activeTab === 'computer' && (
-          <ComputerPanel bot={activeBot} onBackToChat={() => setActiveTab('chat')} />
+          <ComputerPanel
+            bot={activeBot}
+            onBackToChat={() => setActiveTab('chat')}
+            onHandBack={() => {
+              setChatPrefill({
+                text: "I'm done on the computer and have handed control back to you. Please continue.",
+                nonce: Date.now(),
+              });
+              setActiveTab('chat');
+            }}
+          />
         )}
 
         {activeTab === 'marketplace' && (
@@ -140,11 +292,41 @@ export default function Dashboard() {
         {activeTab === 'audit' && <AuditPanel />}
       </main>
 
+      {botEditor && (
+        <BotEditorModal
+          bot={botEditor.mode === 'edit' ? bots.find((b) => b.id === botEditor.bot.id) || botEditor.bot : null}
+          models={models}
+          catalogError={catalogError}
+          onRefreshModels={refreshModels}
+          defaultModel={defaultModel}
+          onClose={() => setBotEditor(null)}
+          onSave={handleSaveBot}
+          onArchive={handleArchiveBot}
+          onDelete={handleDeleteBot}
+        />
+      )}
+
+      {botToDelete && (
+        <ConfirmDialog
+          title={`Delete ${botToDelete.name}?`}
+          body="The bot, its whole conversation, and its computer are removed. This cannot be undone. Archiving keeps everything and just hides the bot."
+          onCancel={() => setBotToDelete(null)}
+          onConfirm={() => handleDeleteBot(botToDelete).catch((err) => console.error('Delete failed:', err))}
+        />
+      )}
+
       {/* Right Side App Settings Drawer Panel */}
       <AppSettingsDrawer
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         currentModel={defaultModel}
+        models={models}
+        catalogError={catalogError}
+        onRefreshModels={refreshModels}
+        onConnectionSaved={async (saved) => {
+          if (saved?.default_model) setDefaultModel(saved.default_model);
+          await refreshModels();
+        }}
         onUpdateDefaultModel={(newModel) => {
           setDefaultModel(newModel);
           if (activeBotId) {
@@ -152,6 +334,10 @@ export default function Dashboard() {
           }
         }}
         onProfileUpdate={(name) => setUserName(name || 'You')}
+        onSignOut={() => {
+          setIsSettingsOpen(false);
+          setAuthState('login');
+        }}
       />
     </div>
   );

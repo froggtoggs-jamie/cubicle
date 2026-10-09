@@ -1,0 +1,16 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Chromium
+Comment=Web browser
+# This exact command is also what the driver spawns when the bot needs the
+# browser, so the dock, the bot, and the person at the desk share one
+# instance. The DevTools port is loopback-only and is how the driver attaches.
+# --no-sandbox: Chrome's own process sandbox needs privileges the container
+# deliberately lacks; the container is the sandbox (Playwright passes it too).
+Exec=__CHROME__ --class=OpenGrokBrowser --user-data-dir=/tmp/profile --remote-debugging-port=9222 --no-sandbox --no-first-run --no-default-browser-check --disable-infobars --disable-session-crashed-bubble --start-maximized %U
+Icon=__CHROME_ICON__
+Terminal=false
+StartupNotify=false
+StartupWMClass=OpenGrokBrowser
+Categories=Network;WebBrowser;

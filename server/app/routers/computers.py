@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+import asyncio
+
+from fastapi import APIRouter, HTTPException, WebSocket
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+import websockets
+
+from app.services.auth_service import SESSION_COOKIE, auth_service
 
 from app.services.action_gateway import (
     ActionGatewayError,
@@ -29,8 +34,13 @@ class ComputerActionRequest(BaseModel):
         "files_list",
         "send_input",
         "cleanup",
+        "request_takeover",
     ]
     arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ControlRequest(BaseModel):
+    owner: Literal["bot", "user"]
 
 
 def _ensure_bot(bot_id: str) -> None:
@@ -49,6 +59,10 @@ def _preview(action: str, bot_id: str, arguments: Dict[str, Any]) -> str:
         return f"Send input to the computer for {bot_id}"
     if action == "cleanup":
         return f"Remove the computer assigned to {bot_id}"
+    if action == "request_takeover":
+        return f"Ask the user to take over the computer for {bot_id}"
+    if action == "set_control":
+        return f"Give control of the computer for {bot_id} to the {arguments.get('owner') or 'bot'}"
     return f"Run computer action {action} for {bot_id}"
 
 
@@ -145,6 +159,86 @@ async def health_computer(bot_id: str):
 @router.get("/{bot_id}/screenshot")
 async def screenshot_computer(bot_id: str):
     return await _run_action(bot_id, "screenshot")
+
+
+@router.post("/{bot_id}/control")
+async def set_computer_control(bot_id: str, request: ControlRequest):
+    """Hand the desktop to the user (view + input) or back to the bot."""
+    return await _run_action(bot_id, "set_control", {"owner": request.owner})
+
+
+def websocket_is_authenticated(websocket: WebSocket) -> bool:
+    """The HTTP auth middleware does not see WebSocket upgrades, so check here."""
+    authorization = websocket.headers.get("authorization", "")
+    scheme, _, bearer = authorization.partition(" ")
+    if scheme.lower() == "bearer" and auth_service.authenticate_token(bearer.strip()):
+        return True
+    return auth_service.authenticate_token(websocket.cookies.get(SESSION_COOKIE))
+
+
+@router.websocket("/{bot_id}/vnc")
+async def computer_vnc(websocket: WebSocket, bot_id: str):
+    """Bridge the browser's noVNC client to the sandbox's VNC server.
+
+    The sandbox publishes no ports; its driver exposes VNC over a WebSocket
+    that requires the per-computer token, which only this process knows. The
+    user's session is checked first, so the desktop is reachable only by a
+    signed-in user through this route.
+    """
+    if not websocket_is_authenticated(websocket):
+        await websocket.close(code=4401)
+        return
+    if not any(bot.get("id") == bot_id for bot in storage_service.get_bots()):
+        await websocket.close(code=4404)
+        return
+    status = computer_provider.describe(bot_id)
+    target = computer_provider.vnc_target(status.computer_id) if hasattr(computer_provider, "vnc_target") else None
+    if not target:
+        await websocket.close(code=4409)
+        return
+
+    requested = websocket.headers.get("sec-websocket-protocol")
+    subprotocol = requested.split(",")[0].strip() if requested else None
+    await websocket.accept(subprotocol=subprotocol)
+
+    upstream_url = f"ws://{target['host']}:{target['port']}/vnc"
+    try:
+        async with websockets.connect(
+            upstream_url,
+            additional_headers={"x-computer-token": target["token"]},
+            max_size=None,
+            ping_interval=None,
+            open_timeout=10,
+        ) as upstream:
+
+            async def client_to_sandbox():
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
+                        return
+                    if message.get("bytes") is not None:
+                        await upstream.send(message["bytes"])
+                    elif message.get("text"):
+                        await upstream.send(message["text"].encode("utf-8"))
+
+            async def sandbox_to_client():
+                async for frame in upstream:
+                    if isinstance(frame, (bytes, bytearray)):
+                        await websocket.send_bytes(bytes(frame))
+                    else:
+                        await websocket.send_text(str(frame))
+
+            tasks = [asyncio.create_task(client_to_sandbox()), asyncio.create_task(sandbox_to_client())]
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+    except Exception:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.post("/{bot_id}/actions")

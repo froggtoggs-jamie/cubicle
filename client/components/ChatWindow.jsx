@@ -4,11 +4,14 @@ import React, { useState, useRef, useEffect } from 'react';
 import MessageItem from './MessageItem';
 import ApprovalCard from './ApprovalCard';
 import ModelPicker from './ModelPicker';
+import ToolsPopover from './ToolsPopover';
 import MascotAvatar from './MascotAvatar';
-import { FiPlus, FiMic, FiMicOff, FiMonitor, FiX, FiImage } from 'react-icons/fi';
+import { FiPlus, FiMic, FiMicOff, FiMonitor, FiX, FiImage, FiEdit2 } from 'react-icons/fi';
 import {
   sendMessage,
   subscribeToChatStream,
+  startTurn,
+  fetchTurnStatus,
   uploadImage,
   respondApproval,
 } from '../lib/api';
@@ -35,14 +38,39 @@ function formatHeaderDate(msgs) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function ChatWindow({ bot, models, messages, setMessages, onUpdateBotModel, onToggleComputer, defaultModel }) {
+export default function ChatWindow({ bot, models, catalogError, onRefreshModels, messages, setMessagesFor, streamingBots, onStreamingChange, turnStates, onUpdateBotModel, onEditBot, onUpdateBot, onToggleComputer, defaultModel, prefill }) {
   const [inputPrompt, setInputPrompt] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
+  // Streaming is tracked per bot by the Dashboard so a reply keeps going
+  // while another bot or tab is shown.
+  const isStreaming = Boolean(bot?.id && streamingBots?.[bot.id]);
+  const setStreamingFor = (botId, value) => {
+    if (onStreamingChange) onStreamingChange(botId, value);
+  };
+
+  // One draft per bot: switching bots must not carry or lose typed text.
+  const draftsRef = useRef({});
+  const draftBotRef = useRef(bot?.id);
+  useEffect(() => {
+    const previous = draftBotRef.current;
+    const next = bot?.id;
+    if (previous === next) return;
+    if (previous) draftsRef.current[previous] = inputPrompt;
+    setInputPrompt(draftsRef.current[next] || '');
+    draftBotRef.current = next;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bot?.id]);
   const [isListening, setIsListening] = useState(false);
-  const [activeModel, setActiveModel] = useState(bot?.model || defaultModel || 'grok-4-5');
+  const [activeModel, setActiveModel] = useState(bot?.model || defaultModel || '');
   const [selectedImage, setSelectedImage] = useState(null);
   const [pendingApprovals, setPendingApprovals] = useState([]);
-  const [toolEvents, setToolEvents] = useState([]);
+  // Cards shown when the bot asks the user to take over its computer.
+  const [takeoverRequests, setTakeoverRequests] = useState([]);
+
+  // Text handed in from elsewhere (e.g. "I'm done on the computer" after a
+  // hand-back). An object with a nonce so the same text can be re-applied.
+  useEffect(() => {
+    if (prefill?.text) setInputPrompt(prefill.text);
+  }, [prefill]);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -53,7 +81,7 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
     {
       id: 'msg-intro',
       sender: 'bot',
-      text: `Hello! I am **${botTitle}**, running via MUAPI endpoints. Ask me anything, or give me a task to analyze!`,
+      text: `Hello! I am **${botTitle}**. Ask me anything, or give me a task to analyze!`,
       isError: false,
     },
   ];
@@ -109,10 +137,163 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
     }
   };
 
+  // One live subscription per bot. Attaching replays the turn's events from
+  // `after`, so a reload or another machine rebuilds the reply in progress.
+  const attachmentsRef = useRef({});
+  const attachToTurn = (botId, turnId, after = 0) => {
+    const existing = attachmentsRef.current[botId];
+    if (existing && (!turnId || existing.turnId === turnId)) return;
+    if (existing) existing.close();
+
+    let streamingMsgId = null;
+    const updateMessages = (updater) => setMessagesFor(botId, updater);
+    const finish = () => {
+      setStreamingFor(botId, false);
+      const current = attachmentsRef.current[botId];
+      if (current && current.turnId === turnId) {
+        current.close();
+        delete attachmentsRef.current[botId];
+      }
+    };
+
+    setStreamingFor(botId, true);
+    const close = subscribeToChatStream(
+      botId,
+      { turnId, after },
+      (event) => {
+        if (event.type === 'turn.started') {
+          streamingMsgId = event.botMsgId;
+          updateMessages((prev) =>
+            prev.some((msg) => msg.id === streamingMsgId)
+              ? prev
+              : [
+                  ...prev,
+                  {
+                    id: streamingMsgId,
+                    sender: 'bot',
+                    text: '',
+                    reasoning: '',
+                    isStreaming: true,
+                    created_at: new Date().toISOString(),
+                  },
+                ]
+          );
+        } else if (event.type === 'request.opened') {
+          setPendingApprovals((prev) => [
+            ...prev.filter((approval) => approval.requestId !== event.requestId),
+            { ...event, botId },
+          ]);
+        } else if (event.type === 'computer.takeover_requested') {
+          setTakeoverRequests((prev) => [
+            ...prev.slice(-4),
+            { id: `${event.botMsgId}-${Date.now()}`, reason: event.reason || '', botId },
+          ]);
+        } else if (event.type === 'attachment.added' && event.attachment) {
+          updateMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id !== streamingMsgId) return msg;
+              const existing = msg.attachments || [];
+              const same = (a) => a.source === event.attachment.source && a.path === event.attachment.path;
+              return existing.some(same) ? msg : { ...msg, attachments: [...existing, event.attachment] };
+            })
+          );
+        } else if (['tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'tool.expired'].includes(event.type)) {
+          if (event.requestId) {
+            setPendingApprovals((prev) => prev.filter((approval) => approval.requestId !== event.requestId));
+          }
+          // Keep a per-message record of the tools the model used so the
+          // reply shows them, matching what is persisted in raw_payload.
+          updateMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id !== streamingMsgId) return msg;
+              const key = event.requestId || `${event.callName || event.tool}-${Date.now()}`;
+              const others = (msg.toolCalls || []).filter((call) => call.id !== key);
+              return {
+                ...msg,
+                toolCalls: [
+                  ...others,
+                  {
+                    id: key,
+                    name: event.callName || event.tool,
+                    status: event.type.replace('tool.', ''),
+                    error: event.error || null,
+                  },
+                ],
+              };
+            })
+          );
+        } else if (event.type === 'content.delta') {
+          updateMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === streamingMsgId
+                ? { ...msg, text: msg.text + event.delta }
+                : msg
+            )
+          );
+        } else if (event.type === 'reasoning.delta') {
+          // The model's thinking. Shown in a collapsible block, never
+          // merged into the answer text.
+          updateMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === streamingMsgId
+                ? { ...msg, reasoning: (msg.reasoning || '') + event.delta }
+                : msg
+            )
+          );
+        } else if (event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled') {
+          updateMessages((prev) =>
+            prev.map((msg) => (msg.id === streamingMsgId ? { ...msg, isStreaming: false } : msg))
+          );
+          if (event.type === 'turn.failed' && streamingMsgId) {
+            updateMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === streamingMsgId && !msg.text
+                  ? { ...msg, text: `Error: the reply failed on the server: ${event.error || 'unknown error'}` }
+                  : msg
+              )
+            );
+          }
+          finish();
+        } else if (event.type === 'turn.none') {
+          finish();
+        }
+      },
+      () => finish()
+    );
+    attachmentsRef.current[botId] = { turnId, close };
+  };
+
+  useEffect(() => () => {
+    Object.values(attachmentsRef.current).forEach((attachment) => attachment.close());
+  }, []);
+
+  // Follow a turn that is already running for this bot: after a reload, a
+  // bot switch, or when the server reports one started elsewhere.
+  const remoteTurnId = bot?.id ? turnStates?.[bot.id]?.turn_id : undefined;
+  useEffect(() => {
+    const botId = bot?.id;
+    if (!botId) return undefined;
+    let cancelled = false;
+    fetchTurnStatus(botId)
+      .then((status) => {
+        if (cancelled) return;
+        const turn = status?.turn;
+        if (turn && turn.status === 'running') attachToTurn(botId, turn.turn_id, 0);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bot?.id, remoteTurnId]);
+
   const handleSendMessage = async (e) => {
     e?.preventDefault();
     if ((!inputPrompt.trim() && !selectedImage) || isStreaming) return;
 
+    const botId = bot?.id;
+    if (!botId) return;
+    const updateMessages = (updater) => setMessagesFor(botId, updater);
     const userText = inputPrompt;
     const currentSelected = selectedImage;
     
@@ -121,7 +302,7 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
 
     let finalImageUrl = currentSelected?.uploadedUrl || null;
 
-    // Ensure image upload finishes before dispatching to backend/MUAPI
+    // Ensure image upload finishes before dispatching to the backend
     if (currentSelected && !finalImageUrl) {
       try {
         const res = await uploadImage(currentSelected.file);
@@ -138,61 +319,15 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
       image_url: currentSelected?.previewUrl || finalImageUrl,
       created_at: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, userMsgObj]);
+    updateMessages((prev) => [...prev, userMsgObj]);
 
     try {
-      if (bot?.id) {
-        await sendMessage(bot.id, bot.id, userText, activeModel, finalImageUrl);
-        setIsStreaming(true);
-        let streamingMsgId = null;
-
-
-        subscribeToChatStream(
-          bot.id,
-          activeModel,
-          (event) => {
-            if (event.type === 'turn.started') {
-              streamingMsgId = event.botMsgId;
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: streamingMsgId,
-                  sender: 'bot',
-                  text: '',
-                  created_at: new Date().toISOString(),
-                },
-              ]);
-            } else if (event.type === 'request.opened') {
-              setPendingApprovals((prev) => [
-                ...prev.filter((approval) => approval.requestId !== event.requestId),
-                event,
-              ]);
-            } else if (['tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'tool.expired'].includes(event.type)) {
-              setToolEvents((prev) => [
-                ...prev.slice(-4),
-                { ...event, id: `${event.type}-${Date.now()}` },
-              ]);
-              if (event.type === 'tool.expired') {
-                setPendingApprovals((prev) => prev.filter((approval) => approval.requestId !== event.requestId));
-              }
-            } else if (event.type === 'content.delta') {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.id === streamingMsgId
-                    ? { ...msg, text: msg.text + event.delta }
-                    : msg
-                )
-              );
-            } else if (event.type === 'turn.completed') {
-              setIsStreaming(false);
-            }
-          },
-          () => setIsStreaming(false)
-        );
-      }
+      await sendMessage(botId, botId, userText, activeModel, finalImageUrl);
+      const started = await startTurn(botId, activeModel);
+      attachToTurn(botId, started?.turn?.turn_id || null, 0);
     } catch (err) {
       console.error('Send message error:', err);
-      setIsStreaming(false);
+      setStreamingFor(botId, false);
     }
   };
 
@@ -230,9 +365,25 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
       {/* Top Header Bar */}
       <header className="px-6 py-3.5 flex items-center justify-between z-20 bg-[#09090b]/80 backdrop-blur-md border-b border-[#18181c]">
         {/* Left Side: Bot Indicator */}
-        <div className="flex items-center gap-2.5">
-          <MascotAvatar type={bot?.isError ? 'warning' : 'blue'} size="sm" />
-          <h2 className="font-bold text-sm text-zinc-100 tracking-wide">{botTitle}</h2>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-base border flex-shrink-0"
+            style={{ background: `${bot?.accent_color || '#3b82f6'}22`, borderColor: `${bot?.accent_color || '#3b82f6'}55` }}
+            aria-hidden="true"
+          >
+            {bot?.avatar || '🤖'}
+          </div>
+          <h2 className="font-bold text-sm text-zinc-100 tracking-wide truncate">{botTitle}</h2>
+          {bot && onEditBot && (
+            <button
+              type="button"
+              onClick={onEditBot}
+              className="p-1 rounded-md text-zinc-500 hover:text-white hover:bg-[#1f1f23] transition"
+              title="Edit this bot"
+            >
+              <FiEdit2 className="text-xs" />
+            </button>
+          )}
         </div>
 
 
@@ -241,8 +392,18 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
           <ModelPicker
             currentModel={activeModel}
             models={models}
+            catalogError={catalogError}
+            onRefresh={onRefreshModels}
             onSelectModel={handleModelChange}
           />
+
+          {bot && onUpdateBot && (
+            <ToolsPopover
+              bot={bot}
+              onSave={(toolSettings) => onUpdateBot(bot.id, { tool_settings: toolSettings })}
+              onOpenEditor={onEditBot}
+            />
+          )}
 
           <button
             suppressHydrationWarning={true}
@@ -265,7 +426,7 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
             </span>
           </div>
 
-          {pendingApprovals.map((approval) => (
+          {pendingApprovals.filter((approval) => approval.botId === bot?.id).map((approval) => (
             <ApprovalCard
               key={approval.requestId}
               approval={approval}
@@ -273,29 +434,52 @@ export default function ChatWindow({ bot, models, messages, setMessages, onUpdat
             />
           ))}
 
-          {toolEvents.map((event) => (
+          {takeoverRequests.filter((request) => request.botId === bot?.id).map((request) => (
             <div
-              key={event.id}
-              className="my-2 rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-2 text-[11px] text-slate-300"
+              key={request.id}
+              className="my-3 p-4 rounded-2xl border border-purple-500/30 bg-purple-500/10 shadow-xl max-w-xl"
             >
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-mono text-cyan-300">{event.tool || 'workspace'}</span>
-                <span className={event.type === 'tool.completed' ? 'text-emerald-400' : 'text-amber-400'}>
-                  {event.type.replace('tool.', '')}
-                </span>
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center justify-center flex-shrink-0">
+                  <FiMonitor className="text-base" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-bold text-purple-200 uppercase tracking-wider">
+                    {botTitle} needs you on its computer
+                  </p>
+                  <p className="text-xs text-zinc-200 mt-1">{request.reason || 'The bot asked you to take over its computer.'}</p>
+                  <p className="text-[11px] text-zinc-400 mt-1">
+                    Open the computer, press Take control, do the step, then Hand back. The bot will continue when you tell it you are done.
+                  </p>
+                </div>
               </div>
-              {event.error && <p className="mt-1 text-rose-300">{event.error}</p>}
-              {event.result && (
-                <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-slate-400">
-                  {JSON.stringify(event.result, null, 2)}
-                </pre>
-              )}
+              <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-purple-500/20">
+                <button
+                  suppressHydrationWarning={true}
+                  type="button"
+                  onClick={() => setTakeoverRequests((prev) => prev.filter((item) => item.id !== request.id))}
+                  className="px-3 py-1.5 rounded-xl text-xs font-medium text-zinc-400 hover:text-white transition"
+                >
+                  Dismiss
+                </button>
+                <button
+                  suppressHydrationWarning={true}
+                  type="button"
+                  onClick={() => {
+                    setTakeoverRequests((prev) => prev.filter((item) => item.id !== request.id));
+                    if (onToggleComputer) onToggleComputer();
+                  }}
+                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg shadow-purple-600/30 transition"
+                >
+                  <FiMonitor className="text-sm" /> Open computer
+                </button>
+              </div>
             </div>
           ))}
 
           {/* Message Items List */}
           {activeMessages.map((msg) => (
-            <MessageItem key={msg.id} message={msg} />
+            <MessageItem key={msg.id} message={msg} botId={bot?.id} />
           ))}
 
           {isStreaming && (

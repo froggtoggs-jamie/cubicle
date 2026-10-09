@@ -15,6 +15,8 @@ import {
   disconnectConnector,
   fetchConnectionStatus,
   fetchConnectorCatalog,
+  fetchSettings,
+  saveSettings,
 } from '../lib/api';
 
 // A stable fallback keeps the marketplace useful when the API or connector key
@@ -67,7 +69,37 @@ function normalizeCard(app) {
     blurb: app.blurb || app.description || 'Connector integration',
     domain: app.domain || '',
     logo: app.logo || null,
+    // From the live catalog. Composio lends its own OAuth app for "managed"
+    // toolkits; the rest need an auth config with your credentials first.
+    managedAuth: typeof app.managed_auth === 'boolean' ? app.managed_auth : null,
+    authSchemes: Array.isArray(app.auth_schemes) ? app.auth_schemes : [],
+    hasAuthConfig: Boolean(app.has_auth_config),
+    needsSetup: Boolean(app.needs_setup),
   };
+}
+
+const COMPOSIO_DASHBOARD_URL = 'https://platform.composio.dev/';
+
+const SCHEME_LABELS = {
+  OAUTH2: 'an OAuth app (client ID and secret)',
+  OAUTH1: 'an OAuth 1.0 app',
+  API_KEY: 'an API key',
+  BEARER_TOKEN: 'a bearer token',
+  BASIC: 'a username and password',
+  BASIC_WITH_JWT: 'a username and password',
+  SERVICE_ACCOUNT: 'a service account',
+  GOOGLE_SERVICE_ACCOUNT: 'a Google service account',
+  NO_AUTH: 'no credentials',
+};
+
+function describeSchemes(app) {
+  const labels = (app.authSchemes || []).map((scheme) => SCHEME_LABELS[scheme] || scheme.toLowerCase());
+  if (!labels.length) return 'your own credentials';
+  return labels.join(' or ');
+}
+
+function setupMessage(app) {
+  return `${app.label} has no Composio-managed credentials. In the Composio dashboard, open Auth Configs and create one for ${app.label} with ${describeSchemes(app)}, then refresh this page and connect.`;
 }
 
 function AppIcon({ app }) {
@@ -103,8 +135,11 @@ export default function Marketplace({ onOpenSettings }) {
   const [loading, setLoading] = useState(true);
   const [busySlug, setBusySlug] = useState(null);
   const [notice, setNotice] = useState('');
+  const [noticeLink, setNoticeLink] = useState('');
   const [error, setError] = useState('');
   const [refreshToken, setRefreshToken] = useState(0);
+  // Connected apps whose tools are withheld from every bot.
+  const [disabledToolkits, setDisabledToolkits] = useState([]);
 
   useEffect(() => {
     let mounted = true;
@@ -113,7 +148,9 @@ export default function Marketplace({ onOpenSettings }) {
       setLoading(true);
       setError('');
 
-      const catalog = await fetchConnectorCatalog();
+      // A manual refresh bypasses the server's catalog cache so an auth
+      // config just created in the Composio dashboard shows up at once.
+      const catalog = await fetchConnectorCatalog(refreshToken > 0);
       const nextApps = (catalog.cards || []).length
         ? catalog.cards.map(normalizeCard)
         : CURATED_APPS;
@@ -123,8 +160,17 @@ export default function Marketplace({ onOpenSettings }) {
       setConfigured(Boolean(catalog.configured));
       setSource(catalog.source || 'curated');
 
+      if (catalog.configured) {
+        const settings = await fetchSettings();
+        if (!mounted) return;
+        setDisabledToolkits(Array.isArray(settings?.disabled_toolkits) ? settings.disabled_toolkits : []);
+      }
+
       if (catalog.configured && nextApps.length) {
-        const status = await fetchConnectionStatus(nextApps.map((app) => app.slug));
+        // A connection always sits on an auth config, so only those apps
+        // can be connected; asking about all ~1,600 would not fit in a URL.
+        const candidates = nextApps.filter((app) => app.hasAuthConfig || app.managedAuth === null);
+        const status = await fetchConnectionStatus(candidates.map((app) => app.slug));
         if (!mounted) return;
         setConnected(
           Object.entries(status.services || {})
@@ -153,6 +199,7 @@ export default function Marketplace({ onOpenSettings }) {
   const toggle = async (app) => {
     if (busySlug) return;
     setNotice('');
+    setNoticeLink('');
     setError('');
 
     const isOn = connected.includes(app.slug);
@@ -163,6 +210,12 @@ export default function Marketplace({ onOpenSettings }) {
       setConnected(next);
       saveLocalEnabled(next);
       setNotice('Local preference saved. Add a Composio key to authorize a real account.');
+      return;
+    }
+
+    if (!isOn && app.needsSetup) {
+      setNotice(setupMessage(app));
+      setNoticeLink(COMPOSIO_DASHBOARD_URL);
       return;
     }
 
@@ -195,11 +248,34 @@ export default function Marketplace({ onOpenSettings }) {
     }
   };
 
-  const visible = apps.filter((app) => {
-    if (!search) return true;
-    const query = search.toLowerCase();
-    return `${app.label} ${app.slug} ${app.blurb}`.toLowerCase().includes(query);
-  });
+  const setToolsOffered = async (app, offered) => {
+    const next = offered ? disabledToolkits.filter((slug) => slug !== app.slug) : [...new Set([...disabledToolkits, app.slug])];
+    setDisabledToolkits(next);
+    try {
+      await saveSettings({ disabled_toolkits: next });
+    } catch (err) {
+      setDisabledToolkits(disabledToolkits);
+      setError(err.message || 'Could not update tool settings');
+    }
+  };
+
+  // Without a search, show the apps you can use (connected or set up) and
+  // the most popular ones; the whole catalog is reachable through search.
+  const POPULAR_LIMIT = 60;
+  const SEARCH_LIMIT = 200;
+  const query = search.trim().toLowerCase();
+  let visible;
+  let hiddenCount = 0;
+  if (query) {
+    const matches = apps.filter((app) => `${app.label} ${app.slug} ${app.blurb}`.toLowerCase().includes(query));
+    visible = matches.slice(0, SEARCH_LIMIT);
+    hiddenCount = matches.length - visible.length;
+  } else {
+    const mine = apps.filter((app) => connected.includes(app.slug) || app.hasAuthConfig);
+    const rest = apps.filter((app) => !mine.includes(app)).slice(0, POPULAR_LIMIT);
+    visible = [...mine, ...rest];
+    hiddenCount = apps.length - visible.length;
+  }
 
   return (
     <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[#09090b] select-none font-sans text-zinc-100">
@@ -266,7 +342,22 @@ export default function Marketplace({ onOpenSettings }) {
             : 'border-emerald-500/20 bg-emerald-500/[0.07] text-emerald-300'
         }`}>
           {error ? <FiAlertCircle className="mt-0.5 flex-shrink-0" /> : <FiCheck className="mt-0.5 flex-shrink-0" />}
-          <span>{error || notice}</span>
+          <span>
+            {error || notice}
+            {!error && noticeLink && (
+              <>
+                {' '}
+                <a
+                  href={noticeLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-2 hover:text-white"
+                >
+                  Open the Composio dashboard
+                </a>
+              </>
+            )}
+          </span>
         </div>
       )}
 
@@ -279,9 +370,10 @@ export default function Marketplace({ onOpenSettings }) {
         ) : visible.length === 0 ? (
           <div className="py-16 text-center text-sm text-zinc-600">No apps match.</div>
         ) : (
-          visible.map((app, index) => {
+          [...visible.map((app, index) => {
             const isOn = connected.includes(app.slug);
             const isBusy = busySlug === app.slug;
+            const needsSetup = configured && !isOn && app.needsSetup;
             return (
               <div
                 key={app.slug}
@@ -297,6 +389,22 @@ export default function Marketplace({ onOpenSettings }) {
                     {isOn && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 block flex-shrink-0" />}
                   </div>
                   <div className="text-[11px] text-zinc-500 truncate mt-0.5">{app.blurb}</div>
+                  {isOn && configured && (
+                    <label className="flex items-center gap-1.5 mt-1 text-[10px] text-zinc-400 cursor-pointer select-none w-max" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={!disabledToolkits.includes(app.slug)}
+                        onChange={(e) => setToolsOffered(app, e.target.checked)}
+                        className="accent-emerald-500"
+                      />
+                      {disabledToolkits.includes(app.slug) ? 'Tools off for all bots (still connected)' : 'Tools offered to bots'}
+                    </label>
+                  )}
+                  {needsSetup && (
+                    <div className="text-[10px] text-amber-400/80 truncate mt-0.5">
+                      Bring your own credentials: {describeSchemes(app)}
+                    </div>
+                  )}
                 </div>
 
                 <button
@@ -304,10 +412,13 @@ export default function Marketplace({ onOpenSettings }) {
                   type="button"
                   disabled={Boolean(busySlug)}
                   onClick={() => toggle(app)}
+                  title={needsSetup ? 'Create an auth config for this app in the Composio dashboard first' : undefined}
                   className={`w-28 flex-shrink-0 py-1.5 rounded-xl text-[11px] font-semibold transition flex items-center justify-center gap-1.5 disabled:opacity-50 ${
                     isOn
                       ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-600/40 hover:bg-rose-500/15 hover:text-rose-400 hover:border-rose-500/30'
-                      : 'bg-[#1e1e22] text-zinc-400 border border-[#2a2a30] hover:text-white hover:bg-[#27272a]'
+                      : needsSetup
+                        ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20'
+                        : 'bg-[#1e1e22] text-zinc-400 border border-[#2a2a30] hover:text-white hover:bg-[#27272a]'
                   }`}
                 >
                   {isBusy ? (
@@ -316,6 +427,11 @@ export default function Marketplace({ onOpenSettings }) {
                     <>
                       <FiCheck className="text-xs" />
                       {configured ? 'Connected' : 'Enabled'}
+                    </>
+                  ) : needsSetup ? (
+                    <>
+                      <FiSettings className="text-xs" />
+                      Needs setup
                     </>
                   ) : (
                     <>
@@ -326,7 +442,14 @@ export default function Marketplace({ onOpenSettings }) {
                 </button>
               </div>
             );
-          })
+          }),
+          hiddenCount > 0 && (
+            <div key="__more" className="px-4 py-3 border-t border-[#1a1a1e] text-[11px] text-zinc-500 text-center">
+              {query
+                ? `Showing the first ${visible.length} matches of ${visible.length + hiddenCount}. Narrow the search to find the rest.`
+                : `Showing ${visible.length} of ${apps.length} apps. Search to find any other app, including MCP servers.`}
+            </div>
+          )]
         )}
       </div>
     </div>

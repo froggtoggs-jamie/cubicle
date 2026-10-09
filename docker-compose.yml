@@ -1,0 +1,148 @@
+# Full stack: Caddy (TLS + single origin) -> Next.js client + FastAPI server,
+# with the optional Docker/Playwright computer runtime behind a socket proxy.
+#
+#   cp .env.example .env     # set APP_AUTH_TOKEN and SITE_ADDRESS
+#   docker compose up --build -d
+#
+# To enable the computer runtime add to .env:
+#   COMPUTER_PROVIDER=docker
+#   COMPOSE_PROFILES=computer
+
+name: open-grok-bot
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-https://localhost}
+    # Derive the bare hostname/IP for Caddy's default_sni (see deploy/Caddyfile).
+    command: >
+      sh -c 'export SITE_HOST="$$(printf %s "$$SITE_ADDRESS" | sed -E "s#^[a-z]+://##; s#[:/].*##")";
+      exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # A host path here (e.g. /mnt/user/appdata/open-grok-bot/caddy) keeps
+      # Caddy's internal CA and certificates with the rest of your appdata.
+      - ${CADDY_DATA_DIR:-caddy_data}:/data
+      - caddy_config:/config
+    networks:
+      - default
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      # Required. Pasted into the login screen by anyone using the app.
+      APP_AUTH_TOKEN: ${APP_AUTH_TOKEN:?Set APP_AUTH_TOKEN in .env, for example from `openssl rand -hex 32`}
+      # 1 when SITE_ADDRESS is https://, 0 for a plain http:// address.
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-1}
+      CORS_ORIGINS: ${SITE_ADDRESS:-https://localhost}
+      # LLM defaults. All optional; App Settings in the UI overrides them.
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai_compatible}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-}
+      COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
+      # Computer provider: fake (default) or docker (needs the `computer` profile).
+      COMPUTER_PROVIDER: ${COMPUTER_PROVIDER:-fake}
+      COMPUTER_DOCKER_IMAGE: ${COMPUTER_DOCKER_IMAGE:-open-grok-bot-computer:2.0.0}
+      COMPUTER_DOCKER_NETWORK: open-grok-bot-computers
+      COMPUTER_DOCKER_WORKSPACE_MODE: ${COMPUTER_DOCKER_WORKSPACE_MODE:-volume}
+      COMPUTER_DOCKER_HOST_WORKSPACE_ROOT: ${COMPUTER_DOCKER_HOST_WORKSPACE_ROOT:-}
+      COMPUTER_DOCKER_WALLPAPER: ${COMPUTER_WALLPAPER:-}
+      # The Docker CLI inside the API only ever reaches the socket proxy.
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+    volumes:
+      # Everything the app persists (SQLite database, sandbox workspaces in
+      # volume mode). A host path here puts it in a directory your backups
+      # already cover instead of a named volume inside Docker's storage.
+      - ${API_DATA_DIR:-api_data}:/data
+      - ${WORKSPACE_DIR:-./workspace}:/workspace
+    extra_hosts:
+      # Lets LLM_BASE_URL point at a model server on the Docker host, e.g.
+      # http://host.docker.internal:8080/v1 (Linux needs this; Docker Desktop
+      # provides it already).
+      - "host.docker.internal:host-gateway"
+    expose:
+      - "8000"
+    networks:
+      - default
+      - computers
+      - docker-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  web:
+    build:
+      context: ./client
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+    restart: unless-stopped
+    expose:
+      - "3000"
+    networks:
+      - default
+
+  # Narrow gateway to the host Docker daemon for the computer runtime. Only
+  # the API can reach it (internal network), and only the listed operations
+  # are allowed through.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3
+    profiles:
+      - computer
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: warning
+      CONTAINERS: 1
+      IMAGES: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      ALLOW_RESTARTS: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-control
+
+  # Builds the pinned runtime image on `docker compose build`; it never runs
+  # as a service. The API starts one container per bot from this image.
+  computer-runtime:
+    build: ./runtime
+    image: ${COMPUTER_DOCKER_IMAGE:-open-grok-bot-computer:2.0.0}
+    profiles:
+      - computer
+    deploy:
+      replicas: 0
+    networks:
+      - computers
+
+networks:
+  default:
+  # Runtime containers live here. They can reach the internet and the API,
+  # but not Caddy, the web container, or the socket proxy.
+  computers:
+    name: open-grok-bot-computers
+  # Internal only: no egress, only the API and the socket proxy are attached.
+  docker-control:
+    internal: true
+
+volumes:
+  api_data:
+  caddy_data:
+  caddy_config:

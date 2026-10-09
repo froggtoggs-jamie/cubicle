@@ -1,42 +1,110 @@
+// Behind the compose reverse proxy the API shares the page's origin and the
+// client is built with NEXT_PUBLIC_API_URL=/api/v1. The absolute default is
+// for `npm run dev` next to a locally running API.
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
-const API_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || '';
 
 let sessionPromise = null;
+let authFailureHandler = null;
 
-function withAuthHeaders(headers = {}) {
-  const merged = new Headers(headers);
-  if (API_TOKEN && !merged.has('Authorization')) {
-    merged.set('Authorization', `Bearer ${API_TOKEN}`);
-  }
-  return merged;
+// Authentication is cookie-based. On loopback without APP_AUTH_TOKEN the API
+// hands out the session automatically; everywhere else the user signs in with
+// the token once and the HttpOnly cookie carries the session. The token is
+// never embedded in the client bundle.
+
+// Dashboard registers a handler so a missing or expired session shows the
+// login screen instead of silently returning empty data.
+export function setAuthFailureHandler(handler) {
+  authFailureHandler = handler;
 }
 
-async function ensureSession() {
+export function resetSession() {
+  sessionPromise = null;
+}
+
+function notifyAuthFailure(err) {
+  if (authFailureHandler) authFailureHandler(err);
+}
+
+export async function establishSession() {
   if (typeof window === 'undefined') return null;
   if (!sessionPromise) {
-    sessionPromise = fetch(`${API_BASE_URL}/auth/session`, {
-      credentials: 'include',
-      headers: withAuthHeaders(),
-    })
+    sessionPromise = fetch(`${API_BASE_URL}/auth/session`, { credentials: 'include' })
       .then((res) => {
         if (!res.ok) throw new Error('Authentication required');
         return res.json();
       })
       .catch((err) => {
         sessionPromise = null;
+        notifyAuthFailure(err);
         throw err;
       });
   }
   return sessionPromise;
 }
 
+export async function fetchAuthStatus() {
+  const res = await fetch(`${API_BASE_URL}/auth/status`, { credentials: 'include' });
+  if (!res.ok) throw new Error('The API server is unreachable.');
+  return res.json();
+}
+
+export async function loginWithToken(token) {
+  let res;
+  try {
+    res = await fetch(`${API_BASE_URL}/auth/login`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+  } catch (err) {
+    throw new Error('The API server is unreachable.');
+  }
+  if (res.status === 401) throw new Error('That token was not accepted.');
+  if (!res.ok) throw new Error(`Sign in failed (HTTP ${res.status}).`);
+  const data = await res.json();
+  sessionPromise = Promise.resolve(data);
+  return data;
+}
+
+export async function logout() {
+  try {
+    await fetch(`${API_BASE_URL}/auth/logout`, { method: 'POST', credentials: 'include' });
+  } finally {
+    resetSession();
+  }
+}
+
 async function apiFetch(url, options = {}) {
-  await ensureSession();
-  return fetch(url, {
-    ...options,
-    credentials: 'include',
-    headers: withAuthHeaders(options.headers),
+  await establishSession();
+  const res = await fetch(url, { ...options, credentials: 'include' });
+  if (res.status === 401) {
+    resetSession();
+    notifyAuthFailure(new Error('Authentication required'));
+  }
+  return res;
+}
+
+// Fetch a file a bot shared into the chat; the session cookie travels with
+// it, so the result is a Blob the caller saves or previews.
+export async function fetchSharedFile(attachment, botId, { inline = false } = {}) {
+  const params = new URLSearchParams({
+    source: attachment.source,
+    path: attachment.path,
+    bot_id: botId || '',
+    ...(inline ? { inline: '1' } : {}),
   });
+  const res = await apiFetch(`${API_BASE_URL}/files/download?${params.toString()}`);
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch (err) {
+      /* not JSON */
+    }
+    throw new Error(detail);
+  }
+  return res.blob();
 }
 
 export async function fetchBots() {
@@ -76,14 +144,20 @@ export async function deleteBot(botId) {
   return res.json();
 }
 
-export async function fetchModels() {
+const EMPTY_CATALOG = { provider: '', base_url: '', source: 'fallback', error: null, models: [] };
+
+// Returns { provider, base_url, source, error, models }. `refresh` bypasses
+// the server-side cache after the connection settings change.
+export async function fetchModels(refresh = false) {
   try {
-    const res = await apiFetch(`${API_BASE_URL}/models`);
-    if (!res.ok) return [];
-    return await res.json();
+    const res = await apiFetch(`${API_BASE_URL}/models${refresh ? '?refresh=true' : ''}`);
+    if (!res.ok) return { ...EMPTY_CATALOG, error: `Model catalog request failed (HTTP ${res.status}).` };
+    const data = await res.json();
+    if (Array.isArray(data)) return { ...EMPTY_CATALOG, source: 'remote', models: data };
+    return { ...EMPTY_CATALOG, ...data, models: Array.isArray(data?.models) ? data.models : [] };
   } catch (err) {
     console.warn('Models catalog API offline:', err);
-    return [];
+    return { ...EMPTY_CATALOG, error: 'The API server is offline or unreachable.' };
   }
 }
 
@@ -98,7 +172,7 @@ export async function fetchChatHistory(threadId) {
   }
 }
 
-export async function sendMessage(threadId, botId, text, model = 'grok-4-5', imageUrl = null) {
+export async function sendMessage(threadId, botId, text, model = null, imageUrl = null) {
   try {
     const res = await apiFetch(`${API_BASE_URL}/chat/send`, {
       method: 'POST',
@@ -133,9 +207,16 @@ export async function uploadImage(file) {
   return res.json();
 }
 
-export async function fetchConnectorCatalog() {
+// Built-in tool groups and every connected app's tools, for tool settings.
+export async function fetchToolCatalog() {
+  const res = await apiFetch(`${API_BASE_URL}/tools/catalog`);
+  if (!res.ok) throw new Error('Failed to load the tool catalog');
+  return res.json();
+}
+
+export async function fetchConnectorCatalog(refresh = false) {
   try {
-    const res = await apiFetch(`${API_BASE_URL}/connectors/catalog`);
+    const res = await apiFetch(`${API_BASE_URL}/connectors/catalog${refresh ? '?refresh=1' : ''}`);
     if (!res.ok) return { cards: [], source: 'curated', configured: false };
     return await res.json();
   } catch (err) {
@@ -158,13 +239,19 @@ export async function fetchConnectionStatus(slugs = []) {
 
 export async function authorizeConnector(slug) {
   const res = await apiFetch(`${API_BASE_URL}/connectors/${slug}/authorize`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Failed to authorize ${slug}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.detail || `Failed to authorize ${slug}`);
+  }
   return res.json();
 }
 
 export async function disconnectConnector(slug) {
   const res = await apiFetch(`${API_BASE_URL}/connectors/${slug}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`Failed to disconnect ${slug}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.detail || `Failed to disconnect ${slug}`);
+  }
   return res.json();
 }
 
@@ -179,12 +266,59 @@ export async function fetchAuditEvents(limit = 100) {
   }
 }
 
-export function subscribeToChatStream(threadId, model, onEvent, onError) {
-  const url = `${API_BASE_URL}/chat/stream/${threadId}?model=${encodeURIComponent(model)}`;
+// Turns run on the server. Start one for the latest message; a 409 means a
+// turn is already running and carries it, so callers attach instead.
+export async function startTurn(threadId, model) {
+  const res = await apiFetch(`${API_BASE_URL}/chat/turns/${encodeURIComponent(threadId)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: model || null }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (res.status === 409) return { busy: true, turn: payload.turn || null };
+  if (!res.ok) throw new Error(payload.detail || 'Could not start the reply');
+  return { busy: false, turn: payload.turn };
+}
+
+export async function fetchTurnStatus(threadId) {
+  const res = await apiFetch(`${API_BASE_URL}/chat/turns/${encodeURIComponent(threadId)}`);
+  if (!res.ok) return { turn: null };
+  return res.json();
+}
+
+// Running turns and pending approvals for every bot (sidebar indicators).
+export async function fetchTurnsOverview() {
+  try {
+    const res = await apiFetch(`${API_BASE_URL}/chat/turns`);
+    if (!res.ok) return { turns: [] };
+    return await res.json();
+  } catch (err) {
+    return { turns: [] };
+  }
+}
+
+export async function cancelTurn(threadId) {
+  const res = await apiFetch(`${API_BASE_URL}/chat/turns/${encodeURIComponent(threadId)}/cancel`, { method: 'POST' });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.detail || 'Could not cancel the reply');
+  return payload;
+}
+
+// Follow a turn's events. The server numbers them and honours Last-Event-ID,
+// so the browser's automatic reconnects resume where they left off. The
+// caller closes the subscription on terminal events (turn.completed, etc.);
+// otherwise the browser would keep reconnecting after the server ends it.
+export function subscribeToChatStream(threadId, options, onEvent, onError) {
+  const { turnId = null, after = 0 } = options || {};
+  const params = new URLSearchParams();
+  if (turnId) params.set('turn', turnId);
+  if (after) params.set('after', String(after));
+  const query = params.toString();
+  const url = `${API_BASE_URL}/chat/stream/${encodeURIComponent(threadId)}${query ? `?${query}` : ''}`;
   let eventSource = null;
   let cancelled = false;
 
-  ensureSession()
+  establishSession()
     .then(() => {
       if (cancelled) return;
       eventSource = new EventSource(url, { withCredentials: true });
@@ -199,12 +333,10 @@ export function subscribeToChatStream(threadId, model, onEvent, onError) {
       };
 
       eventSource.onerror = (err) => {
-        // Gracefully close stream when completed or disconnected
-        if (eventSource) {
-          eventSource.close();
-        }
-        if (onError && typeof onError === 'function') {
-          onError(err);
+        // CONNECTING means the browser is retrying by itself with
+        // Last-Event-ID; only a closed source is a real failure.
+        if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+          if (onError && typeof onError === 'function') onError(err);
         }
       };
     })
@@ -301,6 +433,27 @@ export function stopComputer(botId) {
 
 export function resetComputer(botId) {
   return runComputerLifecycleAction(botId, 'reset');
+}
+
+// Hand the sandbox desktop to the user ("user") or back to the bot ("bot").
+export async function setComputerControl(botId, owner) {
+  const res = await apiFetch(`${API_BASE_URL}/computers/${encodeURIComponent(botId)}/control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ owner }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.detail || 'Could not change computer control');
+  return payload;
+}
+
+// WebSocket URL for the live desktop (noVNC). Same origin and cookie as the API.
+export function computerVncUrl(botId) {
+  if (typeof window === 'undefined') return '';
+  const base = API_BASE_URL.startsWith('http') ? new URL(API_BASE_URL) : new URL(API_BASE_URL, window.location.origin);
+  const protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+  const path = base.pathname.replace(/\/$/, '');
+  return `${protocol}//${base.host}${path}/computers/${encodeURIComponent(botId)}/vnc`;
 }
 
 export async function runComputerAction(botId, action, argumentsData = {}) {

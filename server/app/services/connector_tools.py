@@ -1,0 +1,202 @@
+"""Model tools for every app connected through Composio.
+
+Composio publishes a JSON-schema description of each tool in a toolkit. For
+each toolkit the user has an ACTIVE connection to, this module turns those
+descriptions into `ToolSpec`s the model can call. Execution still goes through
+the action gateway: a tool Composio marks read-only runs without approval,
+anything else pauses for the user, exactly like the hand-written tools.
+"""
+
+import copy
+import logging
+import re
+from typing import Any, Dict, List, Optional
+
+from app.config import settings
+from app.services.action_gateway import ActionDefinition, ActionInvocation, action_gateway
+from app.services.composio_service import ConnectorServiceError, composio_service
+from app.services.llm_tools import ToolSpec
+
+logger = logging.getLogger(__name__)
+
+# OpenAI-compatible servers accept function names matching this pattern.
+_FUNCTION_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_SCHEMA_NOISE = {"title", "examples", "example", "x-composio", "file_uploadable"}
+
+READ_ACTION = "connector.composio_read"
+WRITE_ACTION = "connector.composio_action"
+
+
+def sanitize_schema(schema: Any) -> Dict[str, Any]:
+    """Reduce Composio's parameter schema to what tool-calling servers accept.
+
+    Keeps types, properties, required, enums, descriptions, and defaults; drops
+    titles and examples, and removes a stray `properties` on non-object nodes
+    (Composio emits `{"type": "string", "properties": {}}` for array items).
+    """
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}, "additionalProperties": False}
+
+    def clean(node: Any) -> Any:
+        if isinstance(node, list):
+            return [clean(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        out: Dict[str, Any] = {}
+        node_type = node.get("type")
+        for key, value in node.items():
+            if key in _SCHEMA_NOISE:
+                continue
+            if key == "properties":
+                if node_type not in (None, "object"):
+                    continue
+                out[key] = {name: clean(sub) for name, sub in (value or {}).items() if isinstance(sub, dict)}
+            elif key == "items":
+                out[key] = clean(value)
+            elif key in {"anyOf", "oneOf", "allOf"}:
+                out[key] = clean(value)
+            else:
+                out[key] = copy.deepcopy(value)
+        if out.get("type") == "object" and "properties" not in out:
+            out["properties"] = {}
+        return out
+
+    cleaned = clean(schema)
+    cleaned["type"] = "object"
+    cleaned.setdefault("properties", {})
+    cleaned["additionalProperties"] = False
+    required = [name for name in cleaned.get("required") or [] if name in cleaned["properties"]]
+    if required:
+        cleaned["required"] = required
+    else:
+        cleaned.pop("required", None)
+    return cleaned
+
+
+def spec_from_composio_tool(tool: Dict[str, Any]) -> Optional[ToolSpec]:
+    """Build the model-facing spec for one Composio tool, or None to skip it."""
+    slug = str(tool.get("slug") or "").strip()
+    if not slug or tool.get("is_deprecated") or tool.get("deprecated") is True:
+        return None
+    name = slug.lower()
+    if not _FUNCTION_NAME.fullmatch(name):
+        return None
+    toolkit = tool.get("toolkit") if isinstance(tool.get("toolkit"), dict) else {}
+    toolkit_slug = str(toolkit.get("slug") or slug.split("_", 1)[0]).lower()
+    toolkit_name = str(toolkit.get("name") or toolkit_slug)
+    tags = {str(tag) for tag in tool.get("tags") or []}
+    read_only = "readOnlyHint" in tags and "destructiveHint" not in tags
+    description = str(tool.get("description") or tool.get("human_description") or tool.get("name") or slug).strip()
+    description = f"[{toolkit_name}] {description}"[:1024]
+    return ToolSpec(
+        name=name,
+        description=description,
+        parameters=sanitize_schema(tool.get("input_parameters")),
+        group="connector",
+        needs_approval=not read_only,
+        connector={
+            "slug": slug,
+            "toolkit": toolkit_slug,
+            "toolkit_name": toolkit_name,
+            "title": str(tool.get("name") or slug),
+            "read_only": read_only,
+            "version": str(tool.get("version") or "") or None,
+        },
+    )
+
+
+async def connector_tool_specs(service: Any = None) -> List[ToolSpec]:
+    """Specs for every tool in every connected toolkit, or [] when unavailable.
+
+    A missing key, an unreachable Composio, or a scoped key simply means the
+    model is offered no connector tools this turn; the turn itself proceeds.
+    """
+    service = service if service is not None else composio_service
+    getter = getattr(service, "get_api_key", None)
+    if not callable(getter) or not getter():
+        return []
+    if not hasattr(service, "list_connected_toolkits") or not hasattr(service, "list_tools"):
+        return []
+    try:
+        toolkits = await service.list_connected_toolkits()
+    except ConnectorServiceError as exc:
+        logger.warning("Connector tools unavailable: %s", exc)
+        return []
+
+    specs: List[ToolSpec] = []
+    seen = set()
+    per_toolkit = max(1, settings.COMPOSIO_TOOLS_PER_TOOLKIT)
+    for toolkit in sorted(toolkits):
+        try:
+            # An allow list set in the Composio dashboard wins over the
+            # "important" heuristic: offer exactly those tools, whether or
+            # not Composio considers them important.
+            allowed = None
+            if hasattr(service, "allowed_tools"):
+                allowed = await service.allowed_tools(toolkit)
+            if allowed is not None:
+                tools = await service.list_tools(toolkit, important_only=False, limit=200, tool_slugs=list(allowed))
+                wanted = set(allowed)
+                tools = [tool for tool in tools if tool.get("slug") in wanted]
+                missing = sorted(wanted - {tool.get("slug") for tool in tools})
+                if missing:
+                    logger.info("Allowed %s tools not in Composio's catalog: %s", toolkit, ", ".join(missing))
+            else:
+                tools = await service.list_tools(
+                    toolkit,
+                    important_only=settings.COMPOSIO_IMPORTANT_TOOLS_ONLY,
+                    limit=per_toolkit,
+                )
+                if not tools and settings.COMPOSIO_IMPORTANT_TOOLS_ONLY:
+                    # Small toolkits (MCP servers especially) have nothing
+                    # flagged important; offer whatever they have instead.
+                    tools = await service.list_tools(toolkit, important_only=False, limit=per_toolkit)
+        except ConnectorServiceError as exc:
+            logger.warning("Could not list %s tools: %s", toolkit, exc)
+            continue
+        count = 0
+        for tool in tools:
+            spec = spec_from_composio_tool(tool)
+            if spec is None or spec.name in seen:
+                continue
+            seen.add(spec.name)
+            specs.append(spec)
+            count += 1
+            if count >= per_toolkit:
+                break
+    return specs
+
+
+async def execute_composio_tool(call: ActionInvocation) -> Dict[str, Any]:
+    arguments = call.arguments if isinstance(call.arguments, dict) else {}
+    slug = arguments.get("tool")
+    payload = arguments.get("arguments")
+    version = arguments.get("version")
+    if not isinstance(slug, str) or not isinstance(payload, dict):
+        raise ConnectorServiceError("The connector tool call is malformed.")
+    return await composio_service.execute_tool(slug, payload, version=version if isinstance(version, str) else None)
+
+
+action_gateway.register_action(
+    ActionDefinition(
+        name=READ_ACTION,
+        tool="connector",
+        action="composio_read",
+        intent="Read data from a connected app through Composio.",
+        risk="read",
+        requires_approval=False,
+    ),
+    execute_composio_tool,
+)
+
+action_gateway.register_action(
+    ActionDefinition(
+        name=WRITE_ACTION,
+        tool="connector",
+        action="composio_action",
+        intent="Act in a connected app through Composio.",
+        risk="external",
+        requires_approval=True,
+    ),
+    execute_composio_tool,
+)

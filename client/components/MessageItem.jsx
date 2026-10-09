@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FiX, FiChevronRight, FiTool } from 'react-icons/fi';
+import { FiX, FiChevronRight, FiTool, FiZap } from 'react-icons/fi';
 import FileCard from './FileCard';
 
 function formatMsgTime(createdAt) {
@@ -67,6 +67,14 @@ const TOOL_STATUS_STYLES = {
   rejected: 'text-rose-400',
 };
 
+// How a call got approved, for the tool chip. Only auto-approvals get a mark;
+// a user's own decision needs none.
+function gateTitle(gate) {
+  if (!gate) return '';
+  const scores = Object.entries(gate.scores || {}).map(([k, v]) => `${k} ${Number(v).toFixed(2)}`).join(', ');
+  return `${gate.outcome === 'auto_approved' ? 'Auto-approved' : 'Scored'} (${gate.mode}): ${gate.reason}${scores ? `\n${scores}` : ''}`;
+}
+
 // Compact list of the tools the model called while producing a reply.
 function ToolCallList({ calls }) {
   return (
@@ -74,12 +82,13 @@ function ToolCallList({ calls }) {
       {calls.map((call, index) => (
         <span
           key={call.id || `${call.name}-${index}`}
-          title={call.error || call.summary || call.name}
+          title={[call.error || call.summary || call.name, gateTitle(call.gate)].filter(Boolean).join('\n')}
           className="inline-flex items-center gap-1.5 rounded-lg border border-[#2b2b32] bg-[#141416]/70 px-2 py-1 text-[10px] font-mono text-zinc-300"
         >
           <FiTool className="text-[10px] text-zinc-500" />
           <span>{call.name}</span>
           <span className={TOOL_STATUS_STYLES[call.status] || 'text-zinc-500'}>{call.status}</span>
+          {call.gate?.outcome === 'auto_approved' && <FiZap className="text-[10px] text-emerald-400" aria-label="auto-approved" />}
         </span>
       ))}
     </div>

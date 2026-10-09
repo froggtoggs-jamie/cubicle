@@ -82,7 +82,8 @@ class ApprovalBroker:
         finally:
             self.pending.pop(request_id, None)
 
-    def resolve(self, request_id: str, action: str) -> bool:
+    def resolve(self, request_id: str, action: str, decided_by: str = "user") -> bool:
+        """Answer a pending approval. `decided_by` is "user" or "decider"."""
         pending = self.pending.get(request_id)
         if not pending or pending.future.done():
             return False
@@ -91,10 +92,12 @@ class ApprovalBroker:
         storage_service.update_approval(request_id, {
             "status": action,
             "resolved_at": _now(),
+            "decided_by": decided_by,
         })
         storage_service.add_audit_event({
             "event": f"approval.{action}",
             "request_id": request_id,
+            "decided_by": decided_by,
             "created_at": _now(),
         })
         return True

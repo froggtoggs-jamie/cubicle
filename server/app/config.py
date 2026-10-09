@@ -62,6 +62,15 @@ class Settings:
     # Turns run server-side and outlive the page, so an approval can wait
     # for someone to come back to it.
     APPROVAL_TIMEOUT_SECONDS: int = int(os.getenv("APPROVAL_TIMEOUT_SECONDS", "900"))
+    # Auto-approval: a decision model (decider-0.8b on a halogen-flash-server
+    # NPU, or anything serving POST /v1/systemone) scores each action that
+    # needs approval. These are the defaults; App Settings overrides them.
+    # off: never consulted; shadow: scored and logged, the user still decides;
+    # on: low-risk actions are approved without asking.
+    AUTO_APPROVAL: str = os.getenv("AUTO_APPROVAL", "off").strip().lower()
+    DECIDER_URL: str = os.getenv("DECIDER_URL", "").strip().rstrip("/")
+    DECIDER_THRESHOLD: float = min(0.99, max(0.01, float(os.getenv("DECIDER_THRESHOLD", "0.2"))))
+    DECIDER_TIMEOUT_SECONDS: float = float(os.getenv("DECIDER_TIMEOUT_SECONDS", "15"))
     AUTH_SESSION_MAX_AGE: int = int(os.getenv("AUTH_SESSION_MAX_AGE", "86400"))
     AUTH_COOKIE_SECURE: bool = os.getenv("AUTH_COOKIE_SECURE", "0").lower() in {"1", "true", "yes"}
     COMPUTER_PROVIDER: str = os.getenv("COMPUTER_PROVIDER", "fake").strip().lower()

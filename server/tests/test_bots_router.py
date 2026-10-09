@@ -80,6 +80,18 @@ class BotsRouterTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             asyncio.run(bots_router.update_bot("missing", bots_router.BotUpdate(name="x")))
 
+    def test_auto_approval_override_is_stored_and_validated(self):
+        bot = asyncio.run(bots_router.create_bot(bots_router.BotInput(name="Gated")))
+        self.assertEqual(bot["auto_approval"], "inherit")
+        updated = asyncio.run(bots_router.update_bot(bot["id"], bots_router.BotUpdate(auto_approval="shadow")))
+        self.assertEqual(updated["auto_approval"], "shadow")
+        self.assertEqual(self.storage.get_bots()[-1]["auto_approval"], "shadow")
+        # A change to something else leaves the override alone.
+        renamed = asyncio.run(bots_router.update_bot(bot["id"], bots_router.BotUpdate(name="Still gated")))
+        self.assertEqual(renamed["auto_approval"], "shadow")
+        with self.assertRaises(Exception):
+            bots_router.BotUpdate(auto_approval="always")
+
     def test_tool_settings_are_validated_and_only_store_switch_offs(self):
         bot = asyncio.run(bots_router.create_bot(bots_router.BotInput(name="Toolsy")))
         updated = asyncio.run(bots_router.update_bot(bot["id"], bots_router.BotUpdate(tool_settings={

@@ -73,6 +73,19 @@ SCHEMA_MIGRATIONS = {
         INSERT OR IGNORE INTO users(id, username, role, created_at)
         VALUES ('local-user', 'local', 'owner', datetime('now'));
     """,
+    # One row per action the auto-approval gate scored: what it was shown,
+    # what it concluded, and what was finally decided (by it or the user).
+    3: """
+        CREATE TABLE IF NOT EXISTS gate_decisions (
+            request_id TEXT PRIMARY KEY,
+            thread_id TEXT,
+            owner_id TEXT NOT NULL DEFAULT 'local-user',
+            created_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_gate_decisions_created_at ON gate_decisions(created_at);
+        CREATE INDEX IF NOT EXISTS idx_gate_decisions_owner ON gate_decisions(owner_id);
+    """,
 }
 
 OWNER_TABLES = (

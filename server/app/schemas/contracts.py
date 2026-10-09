@@ -19,6 +19,9 @@ class Bot(BaseModel):
     # Which tools this bot may use: {"groups": {id: bool}, "toolkits":
     # {slug: bool}, "tools": {name: bool}}; anything absent is enabled.
     tool_settings: Dict[str, Any] = Field(default_factory=dict)
+    # Auto-approval for this bot: "inherit" follows App Settings; "off",
+    # "shadow", or "on" override it for this bot only.
+    auto_approval: Literal["inherit", "off", "shadow", "on"] = "inherit"
     unread_count: int = 0
     created_at: str
 
@@ -113,3 +116,17 @@ class AppSettingsSchema(BaseModel):
     theme: str = "dark"
     # Connected apps whose tools are withheld from every bot (still connected).
     disabled_toolkits: List[str] = Field(default_factory=list)
+    # Auto-approval of actions that need approval, scored by a decision model.
+    # off: never consulted; shadow: scored and logged while the user still
+    # decides; on: actions scored below the threshold run without asking.
+    auto_approval: Literal["off", "shadow", "on"] = Field(
+        default_factory=lambda: settings.AUTO_APPROVAL if settings.AUTO_APPROVAL in {"off", "shadow", "on"} else "off"
+    )
+    # Base URL of a server with POST /v1/systemone, e.g. a halogen-flash-server.
+    decider_url: str = Field(
+        default_factory=lambda: settings.DECIDER_URL,
+        max_length=300,
+        pattern=r"^(https?://[^\s]+)?$",
+    )
+    # An action is auto-approved only when every risk score is below this.
+    decider_threshold: float = Field(default_factory=lambda: settings.DECIDER_THRESHOLD, ge=0.01, le=0.99)

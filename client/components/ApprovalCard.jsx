@@ -3,6 +3,32 @@
 import React, { useState } from 'react';
 import { FiShield, FiTerminal, FiCheck, FiX, FiAlertTriangle } from 'react-icons/fi';
 
+// One line about what the auto-approval gate concluded, shown on the card
+// while it is pending. `verdict` is the gate.scored event's payload.
+function GateLine({ verdict }) {
+  if (!verdict) return null;
+  const score = typeof verdict.maxScore === 'number' ? verdict.maxScore.toFixed(2) : null;
+  const tone =
+    verdict.outcome === 'auto_approved'
+      ? 'text-emerald-300'
+      : verdict.outcome === 'error'
+        ? 'text-zinc-500'
+        : 'text-amber-300';
+  const text =
+    verdict.outcome === 'auto_approved'
+      ? `Auto-approved: every risk score below ${verdict.threshold} (max ${score}).`
+      : verdict.outcome === 'error'
+        ? `Auto-approval unavailable (${verdict.reason}). Waiting for you.`
+        : verdict.mode === 'shadow'
+          ? `Shadow mode: scored ${score} at most, ${verdict.maxScore < verdict.threshold ? 'would have auto-approved' : 'would have asked'}. Waiting for you.`
+          : `Not auto-approved: ${verdict.reason}. Waiting for you.`;
+  return (
+    <p className={`mt-2 text-[10px] leading-relaxed ${tone}`} title={Object.entries(verdict.scores || {}).map(([k, v]) => `${k}: ${v}`).join('\n')}>
+      {text}
+    </p>
+  );
+}
+
 export default function ApprovalCard({ approval, onRespond }) {
   const [status, setStatus] = useState('pending'); // pending, allowed, denied
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -44,6 +70,7 @@ export default function ApprovalCard({ approval, onRespond }) {
           <p className="text-[11px] text-slate-400 mt-0.5">
             Agent is requesting permission to execute an action on your environment.
           </p>
+          <GateLine verdict={approval.gate} />
         </div>
       </div>
 

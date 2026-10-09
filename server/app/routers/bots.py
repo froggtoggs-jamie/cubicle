@@ -3,7 +3,7 @@
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -23,7 +23,7 @@ MAX_SHORT = 200
 MAX_PROMPT = 20_000
 # Only these fields can be changed from the client; ids, counters, and
 # timestamps are the server's.
-EDITABLE_FIELDS = {"name", "role", "description", "avatar", "model", "accent_color", "system_prompt", "tools", "pinned", "tool_settings"}
+EDITABLE_FIELDS = {"name", "role", "description", "avatar", "model", "accent_color", "system_prompt", "tools", "pinned", "tool_settings", "auto_approval"}
 MAX_TOOL_SETTINGS_ENTRIES = 2000
 
 
@@ -77,6 +77,7 @@ class BotUpdate(BaseModel):
     pinned: Optional[bool] = None
     archived: Optional[bool] = None
     tool_settings: Optional[Dict[str, Any]] = None
+    auto_approval: Optional[Literal["inherit", "off", "shadow", "on"]] = None
 
 
 def _find(bots: List[Dict[str, Any]], bot_id: str) -> int:
@@ -108,6 +109,7 @@ async def create_bot(bot_data: BotInput):
         "system_prompt": bot_data.system_prompt.strip() or f"You are {name}, a helpful AI assistant.",
         "tools": bot_data.tools,
         "tool_settings": {},
+        "auto_approval": "inherit",
         "pinned": False,
         "archived": False,
         "unread_count": 0,

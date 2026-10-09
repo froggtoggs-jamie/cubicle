@@ -365,6 +365,24 @@ export async function respondApproval(requestId, action) {
   return res.json();
 }
 
+// The auto-approval gate: probe a decision server, and read what it decided.
+export async function checkDecider(deciderUrl = '') {
+  const res = await apiFetch(`${API_BASE_URL}/gate/check`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decider_url: deciderUrl }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.detail || 'Could not reach the decision server');
+  return data;
+}
+
+export async function fetchGateDecisions(limit = 200) {
+  const res = await apiFetch(`${API_BASE_URL}/gate/decisions?limit=${encodeURIComponent(limit)}`);
+  if (!res.ok) throw new Error('Failed to load gate decisions');
+  return res.json();
+}
+
 export async function fetchSettings() {
   try {
     const res = await apiFetch(`${API_BASE_URL}/settings`);

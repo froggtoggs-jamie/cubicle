@@ -30,6 +30,9 @@ SETTING_KEYS = {
     "default_model",
     "theme",
     "disabled_toolkits",
+    "auto_approval",
+    "decider_url",
+    "decider_threshold",
 }
 
 
@@ -71,6 +74,9 @@ class StorageService:
             "composio_api_key": settings.COMPOSIO_API_KEY,
             "default_model": settings.DEFAULT_MODEL,
             "theme": "dark",
+            "auto_approval": settings.AUTO_APPROVAL if settings.AUTO_APPROVAL in {"off", "shadow", "on"} else "off",
+            "decider_url": settings.DECIDER_URL,
+            "decider_threshold": settings.DECIDER_THRESHOLD,
         }
 
     def _stored_setting_keys(self) -> set:
@@ -499,6 +505,50 @@ class StorageService:
                 "INSERT INTO audit_events(created_at, owner_id, payload) VALUES (?, ?, ?)",
                 (created_at, self.owner_id, json.dumps(event)),
             )
+
+    def add_gate_decision(self, decision: Dict[str, Any]):
+        """Record what the auto-approval gate was shown and concluded."""
+        if not isinstance(decision, dict) or not decision.get("request_id"):
+            return
+        created_at = str(decision.get("created_at") or _now())
+        with self.database.connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO gate_decisions(request_id, thread_id, owner_id, created_at, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (str(decision["request_id"]), decision.get("thread_id"), self.owner_id, created_at, json.dumps(decision)),
+            )
+
+    def update_gate_decision(self, request_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM gate_decisions WHERE owner_id = ? AND request_id = ?",
+                (self.owner_id, request_id),
+            ).fetchone()
+            if not row:
+                return None
+            decision = self._decode_payload(row[0])
+            if not isinstance(decision, dict):
+                return None
+            decision.update(updates)
+            connection.execute(
+                "UPDATE gate_decisions SET payload = ? WHERE owner_id = ? AND request_id = ?",
+                (json.dumps(decision), self.owner_id, request_id),
+            )
+        return decision
+
+    def get_gate_decisions(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Most recent gate decisions, oldest first."""
+        bounded_limit = max(1, min(limit, 5000))
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM gate_decisions WHERE owner_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (self.owner_id, bounded_limit),
+            ).fetchall()
+        return [
+            payload
+            for row in reversed(rows)
+            if isinstance((payload := self._decode_payload(row[0])), dict)
+        ]
 
 
 storage_service = StorageService()

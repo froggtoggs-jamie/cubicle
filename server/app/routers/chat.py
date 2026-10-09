@@ -16,6 +16,7 @@ from app.services.action_gateway import (
     ActionPolicyError,
     action_gateway,
 )
+from app.services.approval_gate import approval_gate
 from app.services.composio_service import composio_service
 from app.services.connector_tools import connector_tool_specs
 from app.services import file_share as _file_share  # noqa: F401 - registers files.share
@@ -123,11 +124,15 @@ async def _perform_action(
     thread_id: str,
     action_call: Any,
     call_name: Optional[str] = None,
+    gate_mode: str = "off",
+    user_request: str = "",
 ) -> Dict[str, Any]:
     """Run one governed action through the gateway, emitting events on the turn.
 
     Returns an outcome dict describing what happened so the caller can tell
-    the model (or the system prompt) about it.
+    the model (or the system prompt) about it. `gate_mode` is the bot's
+    effective auto-approval mode; `user_request` is the user's latest message,
+    which the gate shows the decision model next to the proposed action.
     """
     try:
         action_request, approval = action_gateway.open(thread_id, thread_id, action_call)
@@ -163,17 +168,33 @@ async def _perform_action(
             "created_at": approval.get("created_at"),
         })
 
+    # The auto-approval gate scores the action while the card is up. In "on"
+    # mode a low-risk action is approved here on the user's behalf; otherwise
+    # (shadow, a risky score, or any error) the card stays and the user decides.
+    verdict = None
+    if approval and gate_mode in ("shadow", "on"):
+        verdict = await approval_gate.evaluate(action_request, action_call, mode=gate_mode, user_request=user_request)
+        approval_gate.record(action_request, verdict)
+        turn.emit({"type": "gate.scored", **base, "verdict": verdict.to_event()})
+        if verdict.auto_approved:
+            action_gateway.resolve_approval(action_request, "allow", decided_by="decider")
+
     try:
         decision = await action_gateway.wait_for_decision(action_request)
     finally:
         turn.set_pending_approval(None)
 
+    if verdict is not None:
+        decided_by = "decider" if verdict.auto_approved and decision == "allow" else "user"
+        approval_gate.record_final(action_request.request_id, decision, decided_by)
+        base["gate"] = verdict.to_event()
+
     if decision == "deny":
         turn.emit({"type": "tool.denied", **base})
-        return {"status": "denied", "error": f"The user denied this action: {action_request.preview}", "request": action_request}
+        return {"status": "denied", "error": f"The user denied this action: {action_request.preview}", "request": action_request, "gate": verdict}
     if decision != "allow":
         turn.emit({"type": "tool.expired", **base})
-        return {"status": "expired", "error": f"The approval request expired before the user answered: {action_request.preview}", "request": action_request}
+        return {"status": "expired", "error": f"The approval request expired before the user answered: {action_request.preview}", "request": action_request, "gate": verdict}
 
     turn.emit({"type": "tool.started", **base, "action": action_request.model_dump()})
     try:
@@ -185,11 +206,11 @@ async def _perform_action(
     if action_result.status == "completed":
         result = action_result.result or {}
         turn.emit({"type": "tool.completed", **base, "result": _compact_result(result)})
-        return {"status": "completed", "result": result, "request": action_request}
+        return {"status": "completed", "result": result, "request": action_request, "gate": verdict}
 
     error = action_result.error or "The action failed."
     turn.emit({"type": "tool.failed", **base, "error": error})
-    return {"status": "failed", "error": f"Action failed ({action_name}): {error}", "request": action_request}
+    return {"status": "failed", "error": f"Action failed ({action_name}): {error}", "request": action_request, "gate": verdict}
 
 
 async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
@@ -242,6 +263,8 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
         )
     tool_definitions = openai_tool_definitions(tool_specs) if tool_specs else None
     tools_prompt = describe_tools(tool_specs)
+    # The bot's auto-approval mode is fixed for the whole turn, like its tools.
+    gate_mode = approval_gate.mode_for(current_bot)
 
     async def run(turn: Turn) -> None:
         bot_msg_id = f"msg-{uuid.uuid4().hex[:6]}"
@@ -269,7 +292,7 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
             turn.emit({"type": "tool.failed", "tool": command_tool, "error": str(exc)})
 
         if action_call:
-            outcome = await _perform_action(turn, thread_id, action_call)
+            outcome = await _perform_action(turn, thread_id, action_call, gate_mode=gate_mode, user_request=last_user_text)
             if outcome.get("status") == "completed":
                 tool_context = f"Action result ({action_call.name}): {_tool_result_text(_compact_result(outcome['result']))}"
             else:
@@ -378,7 +401,9 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
                     continue
 
                 record["summary"] = getattr(invocation, "summary", None) or getattr(invocation, "preview", call_name)
-                outcome = await _perform_action(turn, thread_id, invocation, call_name=call_name)
+                outcome = await _perform_action(
+                    turn, thread_id, invocation, call_name=call_name, gate_mode=gate_mode, user_request=last_user_text
+                )
 
                 status = outcome.get("status", "failed")
                 record["status"] = status
@@ -386,6 +411,8 @@ async def _build_turn_runner(thread_id: str, requested_model: Optional[str]):
                 if request_obj is not None:
                     record["requestId"] = request_obj.request_id
                     record["arguments"] = request_obj.arguments
+                if outcome.get("gate") is not None:
+                    record["gate"] = outcome["gate"].to_event()
                 if status == "completed":
                     result = outcome.get("result") or {}
                     payload = _compact_result(result)

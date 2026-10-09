@@ -149,7 +149,7 @@ docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./cubicle-ca.
 
 HTTPS is what makes voice dictation work from another machine, since browsers only grant microphone access on secure origins. If you would rather skip certificates, set `SITE_ADDRESS=http://<hostname-or-ip>` and `AUTH_COOKIE_SECURE=0`.
 
-**Local model servers.** Inside the API container, `localhost` is the container. A server on the Docker host is reachable as `http://host.docker.internal:<port>/v1`; a server on another machine by its LAN address. Enter it in App Settings or as `LLM_BASE_URL` in `.env`.
+**Local model servers.** Inside the API container, `localhost` is the container. A server on the Docker host is reachable as `http://host.docker.internal:<port>/v1`; a server on another machine by its LAN address. Enter it in App Settings or as `LLM_BASE_URL` in `.env`. The same applies to the auto-approval decision server (`DECIDER_URL`, no `/v1` suffix).
 
 **Workspace.** `WORKSPACE_DIR` (default `./workspace`) is mounted as the directory the approved workspace tools can read and write. Point it at a project directory on the Docker host to let bots work on real files there.
 

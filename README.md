@@ -223,7 +223,7 @@ The server reads these variables from the environment:
 | `WORKSPACE_MAX_FILE_BYTES` | `131072` | Read/write size limit for workspace files |
 | `APPROVAL_TIMEOUT_SECONDS` | `900` | How long a pending approval remains open. Turns run server-side, so this can be generous |
 | `AUTO_APPROVAL` | `off` | Default auto-approval mode: `off`, `shadow` (score and log, the user still decides), or `on`. App Settings overrides it; each bot can override that |
-| `DECIDER_URL` | empty | Base URL of the decision server used for auto-approval (a halogen-flash-server with `decider-0.8b`, or any server with `POST /v1/systemone`) |
+| `DECIDER_URL` | empty | Base URL of the decision server used for auto-approval (a halogen-flash-server with `decider-4b`, or any server with `POST /v1/systemone`) |
 | `DECIDER_THRESHOLD` | `0.2` | An action is auto-approved only when every risk score is below this |
 | `DECIDER_TIMEOUT_SECONDS` | `15` | How long to wait for the decision server before falling back to asking the user |
 | `HOST` | `127.0.0.1` | FastAPI bind address |
@@ -323,7 +323,7 @@ With an OpenAI-compatible provider the model is offered these functions. The gat
 
 Every tool that needs approval still opens an approval card. With auto-approval on, a small decision model scores the proposed action while the card is up and, when every risk score is low, answers the card on your behalf; the chat shows which calls it approved (a lightning mark on the tool chip) and the card says why. Anything it is unsure about, and anything it cannot score, waits for you exactly as before.
 
-The model is asked five plain yes/no questions about the action and the message that led to it: does it delete or overwrite data, send local data out, touch credentials or system configuration, download and run code, or do something irreversible such as sending a message. It sees the tool name, its display arguments (a path and byte count, never file contents), and the user's latest message; it never sees tool output, so text the bot read cannot talk the gate into anything. It runs as `decider-0.8b` on a halogen-flash-server NPU, scoring an action in well under a second.
+The model is asked five plain yes/no questions about the action and the message that led to it: does it delete or overwrite data, upload local data somewhere, read secrets or change system settings, download and run code, or do something irreversible such as sending a message. It sees the tool name, its display arguments (a path and byte count, never file contents), and the user's latest message; it never sees tool output, so text the bot read cannot talk the gate into anything. It runs as `decider-4b` (or `decider-0.8b`) on a halogen-flash-server NPU, scoring an action in about a second.
 
 Set it up in **App Settings → Auto-approval**: the server URL (with a Test button), the mode, and the risk threshold. **Shadow** is the mode to start with: approvals behave exactly as before, and **Audit → Auto-approval** shows what the model would have approved next to what you actually decided, including the actions you denied that it would have let through. Switch to **On** once that list looks right. A bot's Tools menu can override the mode for that bot alone. Every scored action is kept in the local database (`gate_decisions`) with its scores, the exact state the model saw, and the final decision, so the log doubles as labelled data for tuning the questions or the threshold later.
 

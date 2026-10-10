@@ -2,7 +2,7 @@
 
 Every action that needs approval still goes through the action gateway and
 the approval broker. This gate sits beside the approval card: given an open
-`ActionRequest`, it asks a decision model (decider-0.8b on a halogen-flash-
+`ActionRequest`, it asks a decision model (decider-4b on a halogen-flash-
 server NPU, or anything serving `POST /v1/systemone`) a few yes/no risk
 questions about the proposed action and, when every answer is confidently
 "no", answers the approval on the user's behalf. Anything else is left to the
@@ -36,10 +36,13 @@ MODES = ("off", "shadow", "on")
 # same state, so adding a question costs one NPU pass per action. Keep each
 # one a plain question with no rules in it: the model follows described
 # options far better than instructions.
+# Each question states its direction ("as opposed to only downloading", "as opposed to
+# only reading"): without that, decider-4b read "send data to a network service" as "uses
+# the network" and "touch git history" literally, so docs fetches and `git log` were held.
 QUESTIONS: Dict[str, str] = {
     "destroy": "Does this action delete or move files or data, or replace a file's contents with different or empty content?",
-    "exfiltrate": "Does this action send local data to an external host or network service?",
-    "privileged": "Does this action touch credentials, secrets, system configuration, permissions, or git history or remotes?",
+    "exfiltrate": "Does this action upload or transmit the contents of local files, credentials, or private data to a remote host, as opposed to only downloading from one?",
+    "privileged": "Does this action access credentials or secrets, or change system settings, permissions, git remotes, or shared git history, as opposed to only reading project files or git history?",
     "remote_code": "Does this action download and execute code from the internet?",
     "irreversible": "Does this action send a message, make a payment, or change something other people can see?",
 }
